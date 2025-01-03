@@ -1,6 +1,6 @@
-# Chall - Your Challenge Title
+# Sandboxer
 
-> A brief description of the challenge
+> A game revealing flags only through some modifications of its original form
 
 ## Type
 
@@ -9,8 +9,7 @@
 
 ## Designer(s)
 
-- Ada Lovelace
-- Barbara Liskov
+- William Charron-Boyle
 
 ## Description
 

@@ -10,5 +10,8 @@ typedef struct {
 
 HBITMAP loadGfx(HDC sourceDc, BITMAPINFO *bi);
 
+HBITMAP allocGfx(HDC sourceDc, BITMAPINFO *bi, unsigned int w, 
+        unsigned int h);
+
 #define _HEADER_GFX
 #endif

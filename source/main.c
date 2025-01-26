@@ -21,20 +21,24 @@ typedef struct {
 typedef struct {
     const sClockConstant c;
     unsigned long long startTicks, endTicks;
-    unsigned short loops, sleepMs, curTimerResMs;
+    unsigned short loops, sleepMs, virtualTimerResMs;
 } sClock;
 
+// Note that the debug menu only displays some performance metrics 
+// while ignoring others. An example of the latter is the 
+// `globalTimerResMs` member.
 static struct {
-    unsigned short cpuPermille, handles, pagefileKi, ramKi;
+    unsigned short fps, cpuPermille, handles, pagefileKi, ramKi, 
+        curTimerResMs, peakTimerResMs, globalTimerResMs;
 } perfStats;
 
-static sClock constructClock(void);
+static sClock constuctClock(void);
 static unsigned long long getTicks(void);
 static unsigned long long getCpuHundredNs(HANDLE hproc);
 static void updatePerfStats(HANDLE hproc,
-    unsigned int processors, 
     unsigned long long cpuHundredNs,
-    unsigned long long clockUs);
+    unsigned long long clockUs,
+    unsigned int processors);
 #define GET_PERIOD(CLOCK, PRECISION) ( ((PRECISION)*((CLOCK).endTicks-(CLOCK).startTicks)) / (CLOCK).c.ticksPerS )
 
 LRESULT CALLBACK WindowProcedure(HWND hwnd, unsigned int msg, WPARAM wParam,
@@ -42,7 +46,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, unsigned int msg, WPARAM wParam,
 
 // XXX: Implement a warning report system in a debug log?
 int main(void) {
-    sClock clock = constructClock();
+    sClock clock = constuctClock();
     HANDLE hproc;
     HWND hwnd;
     unsigned long long prevCpuHundredNs;
@@ -76,10 +80,7 @@ int main(void) {
     
     // The process should not bother if it could not set the timer 
     // resolution.
-    timeBeginPeriod(clock.curTimerResMs);
-    
-    printf("Minimum: %u\nMaximum: %u\n", clock.c.minTimerResMs,
-        clock.c.maxTimerResMs);
+    timeBeginPeriod(clock.virtualTimerResMs);
     
     clock.startTicks = getTicks();
     for (;;) {
@@ -97,6 +98,7 @@ int main(void) {
             unsigned long long curCpuHundredNs;
             unsigned int us;
             signed short sleepEstimateMs;
+            unsigned short actualTimerRes;
             
             clock.endTicks = getTicks();
             curCpuHundredNs = getCpuHundredNs(hproc);
@@ -107,46 +109,57 @@ int main(void) {
             if (curCpuHundredNs > prevCpuHundredNs) {
                 unsigned long long cpuPeriodUs = curCpuHundredNs 
                     - prevCpuHundredNs;
-                unsigned int slowingDown, increasingInCpuTime;
-                updatePerfStats(hproc, processors, cpuPeriodUs, us);
-                slowingDown = (us+500)/1000 > 1000;
+                int slowingDown, increasingInCpuTime;
+                updatePerfStats(hproc, cpuPeriodUs, us, processors);
+                
+                // The process is slowing down if the current 
+                // framerate is one below the target.
+                slowingDown = us/VIEWPORT_FPS > (1000000UL*(VIEWPORT_FPS-1)
+                    - VIEWPORT_FPS/2 ) / VIEWPORT_FPS;
                 increasingInCpuTime = perfStats.cpuPermille > prevCpuPermille;
                 
-                timeEndPeriod(clock.curTimerResMs);
+                timeEndPeriod(clock.virtualTimerResMs);
                 if (slowingDown && !increasingInCpuTime) {
-                    peakTimerResMs = clock.curTimerResMs;
-                    clock.curTimerResMs = (unsigned short) 
-                        (clock.c.minTimerResMs + clock.curTimerResMs) / 2;
+                    peakTimerResMs = clock.virtualTimerResMs;
+                    clock.virtualTimerResMs = (unsigned short) 
+                        (clock.c.minTimerResMs + clock.virtualTimerResMs) / 2;
                     
-                } else if (!slowingDown && increasingInCpuTime) {
-                    clock.curTimerResMs = (unsigned short) 
-                        (peakTimerResMs + clock.curTimerResMs) / 2;
+                } else if (!slowingDown && increasingInCpuTime
+                        && perfStats.globalTimerResMs 
+                        > clock.virtualTimerResMs) {
+                    
+                    // Increase the process' timer resolution without 
+                    // exceeding the global timer resolution. The 
+                    // latter trumps over all requests for higher and 
+                    // thus lower precision timer resolutions.
+                    clock.virtualTimerResMs = (unsigned short) 
+                        (peakTimerResMs + clock.virtualTimerResMs) / 2;
                     
                 }
-                timeBeginPeriod(clock.curTimerResMs);
+                // Otherwise, do not worry about changing the 
+                // current timer resolution from the process' 
+                // perspective.
                 
-                printf("CPU percent: %u%%\n"
-                    "Handle count: %u\n"
-                    "Pagefile usage: %uki\n"
-                    "RAM usage: %uki\n"
-                    "FPS: %u\n"
-                    "Sleep time: %i\n"
-                    "Timer resolution: %ims\n", perfStats.cpuPermille,
-                    perfStats.handles, perfStats.pagefileKi, 
-                    perfStats.ramKi, (1000000*VIEWPORT_FPS+1000000/2)/us,
-                    clock.sleepMs, clock.curTimerResMs);
+                timeBeginPeriod(clock.virtualTimerResMs);
+                
+                perfStats.fps = (unsigned short)
+                    ((1000000UL*VIEWPORT_FPS+1000000UL/2)/us);
+                perfStats.peakTimerResMs = peakTimerResMs;
                 prevCpuPermille = perfStats.cpuPermille;
                 
             }
             
-            printf("Period: %uus\n", us);
+            actualTimerRes = clock.virtualTimerResMs 
+                > perfStats.globalTimerResMs ? perfStats.globalTimerResMs 
+                : clock.virtualTimerResMs;
+            perfStats.curTimerResMs = actualTimerRes;
             
             sleepEstimateMs = (signed short) ((2*1000)/VIEWPORT_FPS 
-                - (us/1000)/VIEWPORT_FPS
-                - clock.curTimerResMs);   // Assume that the sleep 
-                                          // period will always be 
-                                          // off by the timer 
-                                          // resolution quantity.
+                - (us/1000) / VIEWPORT_FPS
+                - actualTimerRes);  // Assume that the sleep 
+                                    // period will always be 
+                                    // off by the timer 
+                                    // resolution quantity.
             if (sleepEstimateMs > 0) {
                 clock.sleepMs = (unsigned short) (clock.sleepMs 
                     + sleepEstimateMs) / 2; // Average out the last 
@@ -204,6 +217,11 @@ int main(void) {
             if (msg->message == WM_NCLBUTTONDOWN) {
                 clock.startTicks += getTicks()-procTicksStart;
                 
+                // Window resizes temporarily increases CPU usage. 
+                // Pretending that this increase was a decrease can 
+                // avoid decreasing the timer resolution.
+                prevCpuHundredNs = (unsigned long long) -1;
+                
                 // Do not perform any updates.
                 continue;
                 
@@ -237,6 +255,12 @@ int main(void) {
 #include <wingdi.h>
 #include "gfx.h"
 
+#define DEBUG_METRIC_CHARS 7
+#define ARRAY_ELEMENTS(A) (sizeof(A)/(sizeof(*(A))))
+#define DEBUG_WIDTH_PELS (VIEWPORT_WIDTH/2)
+#define DEBUG_HEIGHT_PELS (VIEWPORT_HEIGHT/3)
+#define METRICS 7
+
 LRESULT CALLBACK WindowProcedure(HWND hwnd,
         unsigned int message,
         WPARAM wParam,
@@ -247,18 +271,57 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
     static struct {
         HBITMAP hb;
         HDC memoryDc;
-    } backbuffer, atlas;
+        HFONT hf; // The backbuffer uses a font for the logo.
+                  // The atlas uses a font for item tooltips.
+                  // The debug interface uses a monospace debug font.
+    } backbuffer, atlas, debug;
+    static struct {
+        
+        // Points to an array of string lengths of labels 
+        // with a null terminal character.
+        const unsigned char *labelPels;
+        const char suffix[METRICS][2];
+        
+        // XXX: Unused value `font.h`
+        struct {
+            unsigned char w, h;
+        } bmp, font;
+    } metric = {
+        NULL,
+        { "  ", "%o", "  ", "ki", "ki", "ms", "ms" },
+        { 0, 0 }, { 0, 0 }
+    };
     
     switch (message) {
+        HDC hdc;
+        
         case WM_CREATE: {
-            BITMAPINFO bi;
-            HDC hdc = GetDC(hwnd);
+            hdc = GetDC(hwnd);
             if (hdc == NULL) {
                 PANIC("The process failed to get the current device context",
                     MIRAGE_INVALID_DC);
-                return -1;
+                break;
                 
             }
+        }
+        // Fall-through
+        do {
+            BITMAPINFO bi;
+            const char debugMetric[] =
+                "FPS:\n"
+                "CPU Usage:\n"
+                "Handle Count:\n"
+                "Pagefile Usage:\n"
+                "RAM Usage:\n"
+                "Current Timer Resolution:\n"
+                "Peak Timer Resoltion:\n";
+            static unsigned char srcMetricLabelPels[METRICS+1];
+            const char fontDebug[] = "Courier New";
+            RECT debugRect;
+            size_t i, lastIndex, labels, maxLen;
+            HFONT oldFont;
+            unsigned char debugMenuWidthPels, debugMenuHeightPels,
+                fontDebugWidthPels, fontDebugHeightPels;
             
             bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
             bi.bmiHeader.biWidth = VIEWPORT_WIDTH;
@@ -293,21 +356,156 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             // Select the bitmap for the memory device context into said 
             // device context. The device context will store the 
             // backbuffer bitmap after this function call.
+            // XXX: Get back the original 1x1 bitmap that the 
+            // `SelectObject` function call returns?
             SelectObject(backbuffer.memoryDc, backbuffer.hb);
             atlas.memoryDc = CreateCompatibleDC(backbuffer.memoryDc);
             atlas.hb = loadGfx(backbuffer.memoryDc, &bi);
             if (atlas.hb == NULL) {
+                // XXX: Change error message.
                 PANIC("Failed to load the test graphic.",
                     MIRAGE_TEXTURE_INIT_FAIL);
                 break;
         
             }
+            
+            for (i = 0, maxLen = 0, lastIndex = 0, labels = 0; 
+                    i < ARRAY_ELEMENTS(debugMetric); 
+                    ++i) {
+                if (debugMetric[i] == '\n') {
+                    size_t chars = i-lastIndex;
+                    srcMetricLabelPels[labels] = (unsigned char) chars;
+                    ++labels;
+                    if (chars > maxLen) {
+                        maxLen = chars;
+                        
+                    }
+                    lastIndex = i;
+                    
+                }
+            }
+            if (labels != METRICS) {
+                PANIC("Mismatch between the amount of metrics and "
+                    "debug labels.", MIRAGE_DEBUG_METRIC_MISMATCH);
+                break;
+                
+            }
+            
+            // The last character in the array of string lengths acts 
+            // as a terminal.
+            srcMetricLabelPels[labels] = 0;
+            
+            fontDebugWidthPels = (unsigned char)
+                (DEBUG_WIDTH_PELS / (maxLen+DEBUG_METRIC_CHARS));
+            fontDebugHeightPels = (unsigned char) (DEBUG_HEIGHT_PELS 
+                / labels);
+            
+            for (i = 0; i < labels; ++i) {
+                srcMetricLabelPels[i] = (unsigned char)(srcMetricLabelPels[i]
+                    *fontDebugWidthPels);
+            }
+            
+            // The pixel data of debug interface is initially a 
+            // one-by-one monochrome bitmap.
+            debug.memoryDc = CreateCompatibleDC(backbuffer.memoryDc);
+            debugMenuWidthPels = (unsigned char)(maxLen*fontDebugWidthPels);
+            debug.hb = allocGfx(backbuffer.memoryDc, &bi, debugMenuWidthPels, 
+                DEBUG_HEIGHT_PELS);
+            if (debug.hb == NULL) {
+                PANIC("Failed to load the debug menu pixel data.",
+                    MIRAGE_INVALID_DEBUG_PELDATA);
+                break;
+                
+            }
+            
+            // Create the font for the debug interface.
+            debug.hf = CreateFont(fontDebugHeightPels,
+                fontDebugWidthPels,
+                0, // Escapement
+                0, // Orientation
+                FW_DONTCARE,
+                0, // No italics.
+                0, // No underline.
+                0, // No strikeout.
+                ANSI_CHARSET,
+                OUT_DEFAULT_PRECIS,
+                CLIP_DEFAULT_PRECIS,
+                NONANTIALIASED_QUALITY,
+                FIXED_PITCH|FF_DONTCARE,
+                fontDebug);
+            if (debug.hf == NULL) {
+                PANIC("Failed to load the debug font.",
+                    MIRAGE_INVALID_FONT);
+                break;
+                
+            }
+            
+            oldFont = SelectObject(backbuffer.memoryDc, debug.hf);
+            #undef HGDI_ERROR
+            #define HGDI_ERROR (HFONT)-1
+            if (oldFont == NULL || oldFont == HGDI_ERROR) {
+                PANIC("Cannot access the debug font.",
+                    MIRAGE_LOST_DEBUG_FONT);
+                break;
+                
+            }
+            
+            // Don't bother if the process could not modify font 
+            // attributes.
+            SetTextColor(backbuffer.memoryDc, RGB(255, 255, 255));
+            SetBkColor(backbuffer.memoryDc, RGB(0, 0, 0));
+            
+            debugRect.top = 0;
+            debugRect.left = 0;
+            debugRect.right = DEBUG_WIDTH_PELS;
+            debugRect.bottom = DEBUG_HEIGHT_PELS;
+            
+            // Render text over the backbuffer.
+            if (DrawText(backbuffer.memoryDc, 
+                    debugMetric, 
+                    ARRAY_ELEMENTS(debugMetric), 
+                    &debugRect, 
+                    DT_LEFT) == 0) {
+                PANIC("Debug text render fail.",
+                    MIRAGE_CANNOT_RENDER_FONT);
+                break;
+                
+            }
+            SelectObject(backbuffer.memoryDc, oldFont);
+            SelectObject(backbuffer.memoryDc, backbuffer.hb);
+            
+            // Assign the debug interface bitmap to the debug memory 
+            // device context.
+            SelectObject(debug.memoryDc, debug.hb);
+            
+            debugMenuHeightPels = (unsigned char)(fontDebugHeightPels*labels);
+            
+            // Write the text data from the backbuffer to the debug 
+            // interface's bitmap. This action effectively renders 
+            // text to the debug menu's bitmap.
+            if (!BitBlt(debug.memoryDc, 0, 0, (int) debugMenuWidthPels, 
+                    (int) (fontDebugHeightPels*labels), backbuffer.memoryDc, 
+                    0, 0, SRCCOPY)) {
+                PANIC("Failed to transfer the backbuffer bitmap's data to "
+                    "the debug interface's bitmap.", 
+                    MIRAGE_DEBUG_FROM_BACKBUFFER_FAIL);
+                break;
+                
+            }
+            
+            metric.labelPels = srcMetricLabelPels;
+            metric.bmp.w = debugMenuWidthPels;
+            metric.bmp.h = debugMenuHeightPels;
+            metric.font.w = fontDebugWidthPels;
+            metric.font.h = fontDebugHeightPels;
+        } while(0);
+        // Fall-through
+        {
             ReleaseDC(hwnd, hdc);
             
             // Then invoke the default behaviour for the `WM_CREATE`
             // message.
             break;
-            
         }
         case WM_KEYDOWN: {
             
@@ -315,10 +513,13 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
         }
         case WM_DESTROY: {
             MirageError code = MIRAGE_OK;
+            
+            // XXX: Delete fonts.
             if (DeleteDC(backbuffer.memoryDc) == 0
                     || DeleteObject(backbuffer.hb) == 0
                     || DeleteDC(atlas.memoryDc) == 0
-                    || DeleteObject(atlas.hb) == 0) {
+                    || DeleteObject(atlas.hb) == 0
+                    || DeleteObject(debug.hf) == 0) {
                 
                 code = MIRAGE_INVALID_FREE;
                 
@@ -331,7 +532,11 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
         case WM_PAINT: {
             PAINTSTRUCT ps[1];
             RECT wRect;
-            HDC hdc = BeginPaint(hwnd, ps);
+            HFONT oldFont;
+            size_t i;
+            const unsigned short *p;
+            
+            hdc = BeginPaint(hwnd, ps);
             SetStretchBltMode(hdc, COLORONCOLOR); // Makes rendering 
                                                   // less 
                                                   // CPU-intensive.
@@ -340,23 +545,61 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                                                   // fails.
             
             // Render on the backbuffer.
+            // XXX: Is it necessary to constantly select things?
+            // XXX: Change to properly render sprites from the atlas.
             SelectObject(atlas.memoryDc, atlas.hb);
-            if (!BitBlt(backbuffer.memoryDc, 0, 0, 16, 16, 
+            if (!BitBlt(backbuffer.memoryDc, 300, 0, 316, 16, 
                     atlas.memoryDc, 0, 0, SRCCOPY)) {
-                
-                PANIC("The process failed to draw the test bitmap",
+                PANIC("The process failed to draw a sprite.",
                     MIRAGE_BACKBUFFER_WRITE_FAIL);
                 break;
                 
             }
             
+            if (!BitBlt(backbuffer.memoryDc, 0, 0, metric.bmp.w, metric.bmp.h,
+                    debug.memoryDc, 0, 0, SRCCOPY)) {
+                PANIC("The process failed to render the debug interface",
+                    MIRAGE_BACKBUFFER_WRITE_FAIL);
+                break;
+                
+            }
+            
+            oldFont = SelectObject(backbuffer.memoryDc, debug.hf);
+            SetTextColor(backbuffer.memoryDc, RGB(255, 255, 255));
+            SetBkColor(backbuffer.memoryDc, RGB(0, 0, 0));
+            for (i = 0, p = &perfStats.fps; 
+                    i != METRICS; 
+                    ++i) {
+                unsigned short n = p[i], j = 7 - 2; // Remove suffix
+                char buffer[8] = "        ";
+                
+                memcpy(&buffer[0] + 6, &metric.suffix[i], 
+                    sizeof *metric.suffix);
+                
+                do {
+                    buffer[j] = (char)(n%10 + '0');
+                    --j;
+                } while (n /= 10);
+                
+                if (!TextOut(backbuffer.memoryDc, 
+                        (int) metric.labelPels[i], 
+                        (int)(metric.font.h * i) - (int)i,
+                        &buffer[j] + 1, 7-j)) {
+                    PANIC("The process failed to render the debug interface",
+                        MIRAGE_BACKBUFFER_METRIC_FAIL);
+                    break;
+                    
+                }
+            }
+            SelectObject(backbuffer.memoryDc, oldFont);
+            SelectObject(backbuffer.memoryDc, backbuffer.hb);
+            
             GetWindowRect(hwnd, &wRect);
             
             // Render on the window.
-            if (StretchBlt(hdc, 0, 0, wRect.right-wRect.left, 
+            if (!StretchBlt(hdc, 0, 0, wRect.right-wRect.left, 
                     wRect.bottom-wRect.top, backbuffer.memoryDc, 
-                    0, 0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT, SRCCOPY) == 0) {
-                
+                    0, 0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT, SRCCOPY)) {
                 PANIC("The process failed to refresh the window bitmap.",
                     MIRAGE_WINDOW_WRITE_FAIL);
                 break;
@@ -381,59 +624,43 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
     
 }
 
-static sClock constructClock(void) {
-    union {
-        sClockConstant init;
-        sClock clock;
-    } timeConfig;
+static sClock constuctClock() {
+    sClockConstant init;
     LARGE_INTEGER li;
     TIMECAPS tc[1];
-    
-    #define MAGIC_SANITYCHECK_CLOCK_TICKSPERSEC ((0x77777777UL<<31)|0x77777777UL)
-    timeConfig.init.ticksPerS = MAGIC_SANITYCHECK_CLOCK_TICKSPERSEC;
-    assert(timeConfig.clock.c.ticksPerS 
-        == MAGIC_SANITYCHECK_CLOCK_TICKSPERSEC);
-    #undef MAGIC_SANITYCHECK_CLOCK_TICKSPERSEC
-    
-    #define MAGIC_SANITYCHECK_CLOCK_MINTIMERRES (0x5555)
-    timeConfig.init.minTimerResMs = MAGIC_SANITYCHECK_CLOCK_MINTIMERRES;
-    assert(timeConfig.clock.c.minTimerResMs 
-        == MAGIC_SANITYCHECK_CLOCK_MINTIMERRES);
-    #undef MAGIC_SANITYCHECK_CLOCK_MINTIMERRES
-    
-    #define MAGIC_SANITYCHECK_CLOCK_MAXTIMERRES (0xAAAA)
-    timeConfig.init.maxTimerResMs = MAGIC_SANITYCHECK_CLOCK_MAXTIMERRES;
-    assert(timeConfig.init.maxTimerResMs
-        == MAGIC_SANITYCHECK_CLOCK_MAXTIMERRES);
-    #undef MAGIC_SANITYCHECK_CLOCK_MAXTIMERRES
     
     // The `QueryPerformanceFrequency` function can never fail on 
     // Windows XP and later.
     QueryPerformanceFrequency(&li);
-    timeConfig.init.ticksPerS = (unsigned long) li.QuadPart;
+    init.ticksPerS = (unsigned long) li.QuadPart;
     
     if (timeGetDevCaps(tc, sizeof(TIMECAPS)) == MMSYSERR_NOERROR) {
-        timeConfig.init.minTimerResMs = (unsigned short) tc->wPeriodMin;
-        timeConfig.init.maxTimerResMs = (unsigned short) tc->wPeriodMax;
-        if (timeConfig.init.maxTimerResMs > 1000/VIEWPORT_FPS) {
-            timeConfig.init.maxTimerResMs = 1000/VIEWPORT_FPS;
+        init.minTimerResMs = (unsigned short) tc->wPeriodMin;
+        init.maxTimerResMs = (unsigned short) tc->wPeriodMax;
+        if (init.maxTimerResMs > 1000/VIEWPORT_FPS) {
+            init.maxTimerResMs = 1000/VIEWPORT_FPS;
             
         }
         
     } else {
-        timeConfig.init.minTimerResMs = 1;
-        
-        // The default timer resolution on Windows is 15.625ms.
-        timeConfig.init.maxTimerResMs = 15;
+        // Educated guesses
+        init.minTimerResMs = 1;
+        init.maxTimerResMs = 1000/VIEWPORT_FPS;
         
     }
-    timeConfig.clock.curTimerResMs = (unsigned short)
-        (timeConfig.init.minTimerResMs + timeConfig.init.maxTimerResMs) 
-        / 2;
-    timeConfig.clock.loops = 0;
-    timeConfig.clock.sleepMs = 1000 / VIEWPORT_FPS;
     
-    return timeConfig.clock;
+    {
+        sClock clock = { init, 0, 0, 0, 0, 0 };
+        
+        // The virtual timer resolution is the timer resolution from 
+        // the process' perspective. This resolution does not consider 
+        // the influence of the global timer resolution.
+        clock.virtualTimerResMs = (unsigned short) (clock.c.minTimerResMs 
+            + clock.c.maxTimerResMs) / 2;
+        clock.loops = 0;
+        clock.sleepMs = 1000 / VIEWPORT_FPS;
+        return clock;
+    }
 }
 
 static unsigned long long getCpuHundredNs(HANDLE hproc) {
@@ -454,18 +681,21 @@ static unsigned long long getTicks(void) {
         PANIC("The process could not fetch the current state "
             "of the performance counter.", MIRAGE_INVALID_PERFCOUNTER_ARG);
         return 0;
-        
+    
     }
     return (unsigned long long) li.QuadPart;
 }
 
 #include <psapi.h>
+#include <Ntdef.h>
+#include <ntstatus.h>
+#include <winternl.h>
 static void updatePerfStats(HANDLE hproc,
-        unsigned int processors, 
         unsigned long long cpuHundredNs,
-        unsigned long long clockUs) {
+        unsigned long long clockUs,
+        unsigned int processors) {
     
-    unsigned long handles[1];
+    unsigned long handles[1], dummy[1], globalTimerResHundredNs;
     PROCESS_MEMORY_COUNTERS mc[1];
     
     perfStats.cpuPermille = (unsigned short)
@@ -473,6 +703,13 @@ static void updatePerfStats(HANDLE hproc,
         / processors) // This application runs only on one 
                       // core since it only has one thread.
         / clockUs);
+    
+    if (NtQueryTimerResolution(dummy, dummy, &globalTimerResHundredNs)
+            == STATUS_SUCCESS) {
+        perfStats.globalTimerResMs = (unsigned short)
+            (globalTimerResHundredNs / 10000);
+        
+    }
     
     // Only update if the function call succeeds.
     if (GetProcessHandleCount(hproc, handles)) {

@@ -12,7 +12,7 @@ HBITMAP loadGfx(HDC sourceDc, BITMAPINFO *bi) {
     HBITMAP hb;
     BITMAPINFOHEADER *bih = &bi->bmiHeader;
     
-    memset(&pelData, 0xFF, sizeof(pelData));
+    memset(&pelData, 0x55, sizeof(pelData));
     tempWidth = bih->biWidth;
     tempHeight = bih->biHeight;
     bih->biWidth = PIXELS;
@@ -22,6 +22,35 @@ HBITMAP loadGfx(HDC sourceDc, BITMAPINFO *bi) {
         bih,
         CBM_INIT,
         &pelData,
+        bi,
+        DIB_RGB_COLORS);
+    
+    bih->biWidth = tempWidth;
+    bih->biHeight = tempHeight;
+    
+    return hb;
+}
+
+// XXX: Remove once debugging is over.
+#include <stdio.h>
+
+HBITMAP allocGfx(HDC sourceDc, BITMAPINFO *bi, unsigned int w, 
+        unsigned int h) {
+    
+    LONG tempWidth, tempHeight;
+    HBITMAP hb;
+    BITMAPINFOHEADER *bih = &bi->bmiHeader;
+    
+    // XXX: This temp strategy is terrible.
+    tempWidth = bih->biWidth;
+    tempHeight = bih->biHeight;
+    bih->biWidth = (LONG) w;
+    bih->biHeight = (LONG) h;
+    
+    hb = CreateDIBitmap(sourceDc,
+        bih,
+        0, // Do not initialize pixel data.
+        NULL, // There is no initialization data as a result.
         bi,
         DIB_RGB_COLORS);
     

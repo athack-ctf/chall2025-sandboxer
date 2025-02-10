@@ -7,7 +7,7 @@
 setlocal enabledelayedexpansion
 cls
 
-set translationunits=main.c init.c gfx.c
+set translationunits=main.c init.c gfx.c logic.c
 set optimizationlevel=%1
 if [%optimizationlevel%]==[] (
     set /a optimizationlevel=0
@@ -35,7 +35,7 @@ goto :Eof
 
 
 :Compile
-gcc %translationunits% -o a.exe -luser32 -lgdi32 -lwinmm -lntdll -Wall -Wextra -fpermissive -Werror=attributes -Werror=pointer-arith -Werror=pointer-sign -Werror=missing-parameter-type -Werror=vla -Werror=declaration-after-statement -Werror=multichar -Werror=old-style-declaration -Werror=cast-align -Werror=cast-qual -Werror=cast-function-type -Werror=disabled-optimization -Werror=format=2 -Werror=init-self -Werror=logical-op -Werror=missing-include-dirs -Werror=redundant-decls -Werror=shadow -Werror=undef -Werror=alloca -Werror=strict-aliasing=1 -Werror=arith-conversion -Werror=flex-array-member-not-at-end -Werror=missing-prototypes -Werror=missing-variable-declarations -Werror=inline -Werror=strict-prototypes -Werror=main -Werror=return-mismatch -Werror=enum-conversion -Werror=enum-int-mismatch -Werror=conversion -Werror=int-conversion -Werror=jump-misses-init -Werror=incompatible-pointer-types -Werror=implicit-function-declaration -std=gnu89 -fstrict-flex-arrays=2 -fdiagnostics-show-option -fno-builtin -fno-asm -O%optimizationlevel% -fmax-errors=5
+gcc %translationunits% -o a.exe -luser32 -lgdi32 -lwinmm -lntdll -Wall -Wextra -fpermissive -Werror=attributes -Werror=pointer-arith -Werror=pointer-sign -Werror=missing-parameter-type -Werror=vla -Werror=declaration-after-statement -Werror=multichar -Werror=old-style-declaration -Werror=cast-align -Werror=cast-qual -Werror=cast-function-type -Werror=disabled-optimization -Werror=format=2 -Werror=init-self -Werror=logical-op -Werror=missing-include-dirs -Werror=redundant-decls -Werror=shadow -Werror=undef -Werror=alloca -Werror=strict-aliasing=1 -Werror=arith-conversion -Werror=flex-array-member-not-at-end -Werror=missing-prototypes -Werror=missing-variable-declarations -Werror=inline -Werror=strict-prototypes -Werror=main -Werror=return-mismatch -Werror=enum-conversion -Werror=enum-int-mismatch -Werror=conversion -Werror=int-conversion -Werror=jump-misses-init -Werror=incompatible-pointer-types -Werror=implicit-function-declaration -Werror=overflow -std=gnu89 -fstrict-flex-arrays=2 -fdiagnostics-show-option -fno-builtin -fno-asm -s -O%optimizationlevel% -fmax-errors=5
 
 if %errorlevel% NEQ 0 (
     echo Build failed. 

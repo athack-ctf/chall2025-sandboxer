@@ -6,7 +6,8 @@
 #include "init.h"
 
 HWND constructWindow(
-        LRESULT (*windowProcedure)(HWND, unsigned int, WPARAM, LPARAM)) {
+        LRESULT (*windowProcedure)(HWND, unsigned int, WPARAM, LPARAM),
+        sMoldDirectory *initInfo, unsigned int extraBytes) {
     WNDCLASS wc = { 0 }; // Initialize all handles to to null pointer 
                          // values. This initialization also sets all 
                          // additional allocation byte amounts to zero.
@@ -23,6 +24,9 @@ HWND constructWindow(
     wc.lpfnWndProc = windowProcedure;
     wc.lpszMenuName = WINDOW_MENU_NAME;
     wc.lpszClassName = WINDOW_CLASS_NAME;
+    
+    // XXX: Is it even necessary to allocate extra bytes?
+    wc.cbWndExtra = (int) extraBytes;
     
     wa = RegisterClass(&wc);
     if (wa == 0) {
@@ -43,8 +47,8 @@ HWND constructWindow(
         (HWND) NULL, // Parent window
         (HMENU) NULL, // Class menu
         wc.hInstance,
-        (void*) NULL // The pointer that the window procedure obtains with the 
-                     // `WM_CREATE` message.
+        (void*) initInfo // The pointer that the window procedure 
+                         // obtains with the `WM_CREATE` message.
         );
     if (hwnd == NULL) {
         PANIC("The process failed to create a window.",

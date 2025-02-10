@@ -1,8 +1,7 @@
 #ifndef _HEADER_GLOBAL
 
 #define PANIC(MESSAGE,CODE) (MessageBox((void*)0,"Error: "MESSAGE,"Error",MB_OK|MB_ICONERROR),PostQuitMessage(CODE),(void)0)
-
-#define VIEWPORT_FPS 60
+#define ARRAY_ELEMENTS(A) ~~(sizeof(A)/(sizeof(*(A))))
 
 typedef enum {
     MIRAGE_OK = 0,
@@ -12,7 +11,9 @@ typedef enum {
     MIRAGE_INVALID_DC,
     MIRAGE_BACKBUFFER_INIT_FAIL,
     MIRAGE_TEXTURE_INIT_FAIL,
-    MIRAGE_BACKBUFFER_WRITE_FAIL,
+    MIRAGE_BACKBUFFER_BLACK_OUT_FAIL,
+    MIRAGE_BACKBUFFER_WRITE_SPRITE_FAIL,
+    MIRAGE_BACKBUFFER_WRITE_DEBUG_FAIL,
     MIRAGE_BACKBUFFER_DEBUG_FAIL,
     MIRAGE_BACKBUFFER_METRIC_FAIL,
     MIRAGE_WINDOW_WRITE_FAIL,
@@ -23,8 +24,43 @@ typedef enum {
     MIRAGE_CANNOT_RENDER_FONT,
     MIRAGE_INVALID_DEBUG_PELDATA,
     MIRAGE_DEBUG_FROM_BACKBUFFER_FAIL,
-    MIRAGE_DEBUG_METRIC_MISMATCH
+    MIRAGE_DEBUG_METRIC_MISMATCH,
+    MIRAGE_CANNOT_LOAD_LEVEL,
+    MIRAGE_WINDOW_SET_ATTRIBUTE_FAIL,
+    MIRAGE_WINDOW_GET_ATTRIBUTE_FAIL
 } MirageError;
+
+typedef struct {
+    
+    // The process will load each all animation frames of a sprite 
+    // continuously in memory. Each mold has its own set of animation 
+    // frames. The mold stores this graphic data as a bitmap.
+    void *hb;
+    
+    // Each mold encompasses all characteristics that a class of 
+    // sprites have in common. All instances of the class must have 
+    // the same width and height in pixels. These instances also share 
+    // the same maximum horizontal speed and horizontal 
+    // sub-acceleration.
+    unsigned char w, h, maxSpeed;
+    
+    // The mob's sub-acceleration must be a signed quantity. All the 
+    // sub-velocities of each mob are signed quantities. The dynamics 
+    // simulator accumuates the sub-acceleration in all mobs that are 
+    // accelerating.
+    signed char subAccel;
+} sMold;
+
+// XXX: Add molds for other tekis, like enemies and weapons in their 
+// dropped forms.
+#define MOLDS 1
+typedef struct {
+    
+    // Every mold has a unique identifying integer for it. Any such 
+    // identifier's integral value must be less than the total mold 
+    // count.
+    sMold data[MOLDS];
+} sMoldDirectory;
 
 #define _HEADER_GLOBAL
 #endif

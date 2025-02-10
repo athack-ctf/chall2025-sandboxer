@@ -12,6 +12,9 @@
 #include "global.h"
 #include "global_dict.h"
 #include "init.h"
+#include "logic.h"
+
+#define VIEWPORT_FPS 60
 
 typedef struct {
     unsigned long ticksPerS;
@@ -19,14 +22,15 @@ typedef struct {
 } sClockConstant;
 
 typedef struct {
-    const sClockConstant c;
+    sClockConstant const c;
     unsigned long long startTicks, endTicks;
     unsigned short loops, sleepMs, virtualTimerResMs;
 } sClock;
 
 // Note that the debug menu only displays some performance metrics 
 // while ignoring others. An example of the latter is the 
-// `globalTimerResMs` member.
+// `globalTimerResMs` member. Additionally, this file's code assumes 
+// that the `fps` member is the first member.
 static struct {
     unsigned short fps, cpuPermille, handles, pagefileKi, ramKi, 
         curTimerResMs, peakTimerResMs, globalTimerResMs;
@@ -47,14 +51,43 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, unsigned int msg, WPARAM wParam,
 // XXX: Implement a warning report system in a debug log?
 int main(void) {
     sClock clock = constuctClock();
+    sContext game;
     HANDLE hproc;
     HWND hwnd;
     unsigned long long prevCpuHundredNs;
-    unsigned short prevCpuPermille, peakTimerResMs, processors;
     MirageError code;
+    unsigned short prevCpuPermille, peakTimerResMs, processors;
     
     // The game loop will end immediately if this function call fails.
-    hwnd = constructWindow(&WindowProcedure);
+    // The window procedure is responsible for allocating and 
+    // formating any data graphical data. Mold data incorporates 
+    // information regarding the amount of pixels that composes the 
+    // entity data. This intertwinement forces the window procedure to 
+    // initialise the mold data. The process' entry point does not 
+    // have access to any graphical functionalities or information. 
+    // This limitation requires forwarding the mold directory in the 
+    // `WM_CREATE` window procedure message.
+    hwnd = constructWindow(&WindowProcedure, (void*)&game.scene.md, 
+        sizeof&game.scene);
+    
+    // Set the last error to zero to anticipate potential errors from 
+    // the `SetWindowLongPtr` function.
+    SetLastError(0);
+    
+    // The window procedure must also have access to the game's 
+    // current scene. The call to the `SetWindowLongPtr` function 
+    // stores this scene's address as a window attribute. The window 
+    // creation procedure must allocate additional memory to house 
+    // this address. Calls to the `SetWindowLongPtr` can return zero 
+    // and does not necessarily indicate failure. A call to the 
+    // `GetLastError` function tells whether the function call failed 
+    // or not.
+    SetWindowLongPtr(hwnd, 0, (LONG_PTR)&game.scene);
+    if (GetLastError() != 0) {
+        PANIC("The process could not set a window attribute.",
+            MIRAGE_WINDOW_SET_ATTRIBUTE_FAIL);
+        
+    }
     
     {
         SYSTEM_INFO si[1];
@@ -68,6 +101,14 @@ int main(void) {
         // The `GetSystemInfo` function cannot fail.
         GetSystemInfo(si);
         processors = (unsigned short) si->dwNumberOfProcessors;
+    }    
+    
+    // Initialise all information except for mold data in the 
+    // `sContext` struct instance.
+    startContext(&game);
+    if (game.scene.level.data == NULL) {
+        PANIC("Could not load the initial stage.", MIRAGE_CANNOT_LOAD_LEVEL);
+        
     }
     
     // The `GetCurrentProcess` function cannot fail. It returns a 
@@ -85,6 +126,7 @@ int main(void) {
     clock.startTicks = getTicks();
     for (;;) {
         MSG msg[1];
+        size_t i;
         
         // This branch calculates the amount of time to sleep 
         // frame after sampling one second. Every loop calls some 
@@ -97,28 +139,32 @@ int main(void) {
         if (clock.loops == VIEWPORT_FPS) {
             unsigned long long curCpuHundredNs;
             unsigned int us;
-            signed short sleepEstimateMs;
+            int slowingDown;
             unsigned short actualTimerRes;
             
             clock.endTicks = getTicks();
             curCpuHundredNs = getCpuHundredNs(hproc);
             us = (unsigned long) GET_PERIOD(clock,1000000UL);
             
+            // The process is slowing down if the current framerate is 
+            // one below the target.
+            slowingDown = us > 1000000UL*(VIEWPORT_FPS+1) / VIEWPORT_FPS;
+            
             // The current amount of hundreds of nanoseconds may not 
             // vary between subsequent performance measurements.
             if (curCpuHundredNs > prevCpuHundredNs) {
                 unsigned long long cpuPeriodUs = curCpuHundredNs 
                     - prevCpuHundredNs;
-                int slowingDown, increasingInCpuTime;
+                int increasingInCpuTime;
                 updatePerfStats(hproc, cpuPeriodUs, us, processors);
                 
-                // The process is slowing down if the current 
-                // framerate is one below the target.
-                slowingDown = us/VIEWPORT_FPS > (1000000UL*(VIEWPORT_FPS-1)
-                    - VIEWPORT_FPS/2 ) / VIEWPORT_FPS;
                 increasingInCpuTime = perfStats.cpuPermille > prevCpuPermille;
                 
                 timeEndPeriod(clock.virtualTimerResMs);
+                
+                // XXX: Branch causes the timer resolution to sprial 
+                // to its doom sometimes. This behaviour makes the 
+                // process hold excessive CPU time permanently.
                 if (slowingDown && !increasingInCpuTime) {
                     peakTimerResMs = clock.virtualTimerResMs;
                     clock.virtualTimerResMs = (unsigned short) 
@@ -154,16 +200,30 @@ int main(void) {
                 : clock.virtualTimerResMs;
             perfStats.curTimerResMs = actualTimerRes;
             
-            sleepEstimateMs = (signed short) ((2*1000)/VIEWPORT_FPS 
-                - (us/1000) / VIEWPORT_FPS
-                - actualTimerRes);  // Assume that the sleep 
-                                    // period will always be 
-                                    // off by the timer 
-                                    // resolution quantity.
-            if (sleepEstimateMs > 0) {
-                clock.sleepMs = (unsigned short) (clock.sleepMs 
-                    + sleepEstimateMs) / 2; // Average out the last 
-                                            // two sleep periods.
+            // The process only changes the sleep time if it cannot 
+            // reach the target FPS.
+            if (slowingDown) {
+                unsigned short computationTimeMs;
+                signed short sleepEstimateMs;
+                
+                // The time that the process did not spend for 
+                // sleeping was for performing computations. The sleep 
+                // time cannot exceed the time for completing an 
+                // entire loop. The mean computation time does exhibit 
+                // some error. Any period for one loop deviates by an 
+                // amount equal to the timer resolution. However, this 
+                // error should be zero on average across sixty 
+                // iterations.
+                computationTimeMs = (unsigned short)(us / (VIEWPORT_FPS*1000) 
+                    - clock.sleepMs);
+                sleepEstimateMs = (signed short)(1000/VIEWPORT_FPS
+                    - computationTimeMs - actualTimerRes);
+                
+                // XXX: Is checking for positivity necessary?
+                if (sleepEstimateMs >= 1) {
+                    clock.sleepMs = (unsigned short)sleepEstimateMs;
+                    
+                }
                 
             }
             
@@ -176,13 +236,12 @@ int main(void) {
             
         }
         
-        // A sleep time equal to zero milliseconds causes the 
-        // thread to yield resources indeterminately. The process 
-        // should not sleep in this case instead of yielding resources.
-        if (clock.sleepMs > 0) {
-            Sleep(clock.sleepMs);
-            
-        }
+        // This loop assumes that the current sleep period cannot 
+        // subceed one millisecond. Otherwise, passing zero to any 
+        // call of the `Sleep` function triggers special behaviour. 
+        // In this situation, the call would cause the process to 
+        // yield resources.
+        Sleep(clock.sleepMs);
         
         // Interpret messages from both the active thread and the 
         // process' window.
@@ -229,14 +288,38 @@ int main(void) {
             
         }
         
-        // XXX: Update logic here.
+        // XXX: Prevent overflow for hold duration.
+        // Update the state of inputs.
+        for (i = 0; i < KEYS; ++i) {
+            
+            // XXX: Implement a way to verify that each assignent sets up the 
+            // correct key?
+            // XXX: Static or non-static array?
+            static int const keyId[KEYS] = {
+                VK_RIGHT,
+                VK_UP,
+                VK_LEFT,
+                VK_DOWN,
+                'X',
+                VK_SPACE,
+                'C'
+            };
+            int isDown = !!GetAsyncKeyState(keyId[i]);
+            
+            // The game does not consider the first frame in the 
+            // hold duration.
+            game.input.a[i].holdDur = (unsigned char) 
+                (isDown ? (game.input.a[i].holdDur + isDown)
+                : 0);
+        }
+        updateContext(&game);
         
         RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE|RDW_UPDATENOW);
         
         clock.loops++;
         
-        // Spinlock to reach the frame period to the closest 
-        // microsecond.
+        // Spinlock to reach the frame period that is closest to the  
+        // next microsecond.
         do {
             clock.endTicks = getTicks();
         } while (GET_PERIOD(clock,1000000UL) < 
@@ -256,10 +339,10 @@ int main(void) {
 #include "gfx.h"
 
 #define DEBUG_METRIC_CHARS 7
-#define ARRAY_ELEMENTS(A) (sizeof(A)/(sizeof(*(A))))
-#define DEBUG_WIDTH_PELS (VIEWPORT_WIDTH/2)
-#define DEBUG_HEIGHT_PELS (VIEWPORT_HEIGHT/3)
-#define METRICS 7
+#define DEBUG_WIDTH_PELS ~~(VIEWPORT_WIDTH/2)
+#define DEBUG_HEIGHT_PELS ~~(5*VIEWPORT_HEIGHT/12)
+#define FONT_DEBUG_HEIGHT_PELS ~~(DEBUG_HEIGHT_PELS/METRICS)
+#define METRICS 9  // Including two for the player's x and y.
 
 LRESULT CALLBACK WindowProcedure(HWND hwnd,
         unsigned int message,
@@ -279,21 +362,28 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
         
         // Points to an array of string lengths of labels 
         // with a null terminal character.
-        const unsigned char *labelPels;
-        const char suffix[METRICS][2];
-        
-        // XXX: Unused value `font.h`
+        // XXX: structure as suffix-string length pairs for simpler
+        // data arrangement. There ought to be an amount of these 
+        // pairs matching the amount of metrics.
         struct {
-            unsigned char w, h;
-        } bmp, font;
+            unsigned short widthPels;
+            char const suffix[2];
+        } label[METRICS];
+        enum {
+            DEBUG_OFF = 0,
+            DEBUG_ON
+        } display;
     } metric = {
-        NULL,
-        { "  ", "%o", "  ", "ki", "ki", "ms", "ms" },
-        { 0, 0 }, { 0, 0 }
+        { {0, "  "}, {0, "%o"}, {0, "  "}, {0, "ki"}, {0, "ki"}, {0, "ms"},
+        {0, "ms"}, {0, "  "}, {0, "  "} }, DEBUG_OFF
     };
     
     switch (message) {
         HDC hdc;
+        enum {
+            MIRAGE_HOTKEY_TOGGLE,
+            MIRAGE_HOTKEY_TERMINATE
+        };
         
         case WM_CREATE: {
             hdc = GetDC(hwnd);
@@ -307,21 +397,22 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
         // Fall-through
         do {
             BITMAPINFO bi;
-            const char debugMetric[] =
+            RECT debugRect;
+            size_t i, lastIndex, labels, maxLen;
+            HFONT oldFont;
+            sMoldDirectory *md;
+            char const metricLabelText[] =
                 "FPS:\n"
                 "CPU Usage:\n"
                 "Handle Count:\n"
                 "Pagefile Usage:\n"
                 "RAM Usage:\n"
                 "Current Timer Resolution:\n"
-                "Peak Timer Resoltion:\n";
-            static unsigned char srcMetricLabelPels[METRICS+1];
-            const char fontDebug[] = "Courier New";
-            RECT debugRect;
-            size_t i, lastIndex, labels, maxLen;
-            HFONT oldFont;
-            unsigned char debugMenuWidthPels, debugMenuHeightPels,
-                fontDebugWidthPels, fontDebugHeightPels;
+                "Peak Timer Resoltion:\n"
+                "X:\n"
+                "Y:\n";
+            char const fontDebug[] = "Courier New";
+            unsigned char fontDebugWidthPels;
             
             bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
             bi.bmiHeader.biWidth = VIEWPORT_WIDTH;
@@ -360,21 +451,33 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             // `SelectObject` function call returns?
             SelectObject(backbuffer.memoryDc, backbuffer.hb);
             atlas.memoryDc = CreateCompatibleDC(backbuffer.memoryDc);
-            atlas.hb = loadGfx(backbuffer.memoryDc, &bi);
-            if (atlas.hb == NULL) {
+            
+            // The `lParam` parameter stores a pointer to a 
+            // `CREATESTRUCT` instance. The window creation procedure 
+            // set the `lpCreateParams` member in this struct to a
+            // pointer. This member stores the address of an 
+            // `sMoldDirectory` structure instance.
+            // XXX: Initialise mold directory.
+            md = (sMoldDirectory*) ((CREATESTRUCT*)lParam)->lpCreateParams;
+            if (formatAtlas(md, backbuffer.memoryDc, &bi) != MIRAGE_OK) {
                 // XXX: Change error message.
                 PANIC("Failed to load the test graphic.",
                     MIRAGE_TEXTURE_INIT_FAIL);
                 break;
-        
+                
             }
             
+            metric.display = DEBUG_OFF;
             for (i = 0, maxLen = 0, lastIndex = 0, labels = 0; 
-                    i < ARRAY_ELEMENTS(debugMetric); 
+                    labels < ARRAY_ELEMENTS(metric.label); 
                     ++i) {
-                if (debugMetric[i] == '\n') {
+                if (metricLabelText[i] == '\n') {
                     size_t chars = i-lastIndex;
-                    srcMetricLabelPels[labels] = (unsigned char) chars;
+                    
+                    // Initially store the amount of characters making 
+                    // up the label for each label.
+                    metric.label[labels].widthPels = (unsigned short) chars;
+                    
                     ++labels;
                     if (chars > maxLen) {
                         maxLen = chars;
@@ -384,32 +487,19 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                     
                 }
             }
-            if (labels != METRICS) {
-                PANIC("Mismatch between the amount of metrics and "
-                    "debug labels.", MIRAGE_DEBUG_METRIC_MISMATCH);
-                break;
-                
-            }
-            
-            // The last character in the array of string lengths acts 
-            // as a terminal.
-            srcMetricLabelPels[labels] = 0;
             
             fontDebugWidthPels = (unsigned char)
                 (DEBUG_WIDTH_PELS / (maxLen+DEBUG_METRIC_CHARS));
-            fontDebugHeightPels = (unsigned char) (DEBUG_HEIGHT_PELS 
-                / labels);
             
-            for (i = 0; i < labels; ++i) {
-                srcMetricLabelPels[i] = (unsigned char)(srcMetricLabelPels[i]
-                    *fontDebugWidthPels);
+            for (i = 0; i < METRICS; ++i) {
+                metric.label[i].widthPels = (unsigned short) (
+                    metric.label[i].widthPels * fontDebugWidthPels);
             }
             
             // The pixel data of debug interface is initially a 
             // one-by-one monochrome bitmap.
             debug.memoryDc = CreateCompatibleDC(backbuffer.memoryDc);
-            debugMenuWidthPels = (unsigned char)(maxLen*fontDebugWidthPels);
-            debug.hb = allocGfx(backbuffer.memoryDc, &bi, debugMenuWidthPels, 
+            debug.hb = allocGfx(backbuffer.memoryDc, &bi, DEBUG_WIDTH_PELS, 
                 DEBUG_HEIGHT_PELS);
             if (debug.hb == NULL) {
                 PANIC("Failed to load the debug menu pixel data.",
@@ -419,7 +509,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             }
             
             // Create the font for the debug interface.
-            debug.hf = CreateFont(fontDebugHeightPels,
+            debug.hf = CreateFont(FONT_DEBUG_HEIGHT_PELS,
                 fontDebugWidthPels,
                 0, // Escapement
                 0, // Orientation
@@ -462,8 +552,8 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             
             // Render text over the backbuffer.
             if (DrawText(backbuffer.memoryDc, 
-                    debugMetric, 
-                    ARRAY_ELEMENTS(debugMetric), 
+                    metricLabelText, 
+                    ARRAY_ELEMENTS(metricLabelText), 
                     &debugRect, 
                     DT_LEFT) == 0) {
                 PANIC("Debug text render fail.",
@@ -478,14 +568,11 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             // device context.
             SelectObject(debug.memoryDc, debug.hb);
             
-            debugMenuHeightPels = (unsigned char)(fontDebugHeightPels*labels);
-            
             // Write the text data from the backbuffer to the debug 
             // interface's bitmap. This action effectively renders 
             // text to the debug menu's bitmap.
-            if (!BitBlt(debug.memoryDc, 0, 0, (int) debugMenuWidthPels, 
-                    (int) (fontDebugHeightPels*labels), backbuffer.memoryDc, 
-                    0, 0, SRCCOPY)) {
+            if (!BitBlt(debug.memoryDc, 0, 0, DEBUG_WIDTH_PELS, 
+                    DEBUG_HEIGHT_PELS, backbuffer.memoryDc, 0, 0, SRCCOPY)) {
                 PANIC("Failed to transfer the backbuffer bitmap's data to "
                     "the debug interface's bitmap.", 
                     MIRAGE_DEBUG_FROM_BACKBUFFER_FAIL);
@@ -493,11 +580,16 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                 
             }
             
-            metric.labelPels = srcMetricLabelPels;
-            metric.bmp.w = debugMenuWidthPels;
-            metric.bmp.h = debugMenuHeightPels;
-            metric.font.w = fontDebugWidthPels;
-            metric.font.h = fontDebugHeightPels;
+            // The process should not bother with any failure 
+            // regarding setting up hotkeys.
+            
+            // Toggle display for the debug interface.
+            RegisterHotKey(hwnd, MIRAGE_HOTKEY_TOGGLE, 
+                MOD_CONTROL|MOD_NOREPEAT, 'C');
+            
+            // Terminate the process.
+            RegisterHotKey(hwnd, MIRAGE_HOTKEY_TERMINATE, 
+                MOD_CONTROL|MOD_NOREPEAT, 'W');
         } while(0);
         // Fall-through
         {
@@ -506,10 +598,37 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             // Then invoke the default behaviour for the `WM_CREATE`
             // message.
             break;
-        }
-        case WM_KEYDOWN: {
             
-            return 0;
+        }
+        
+        // Handle inputs that do not affect the player, including 
+        // the following functionalities
+        // *    Toggling the debug interface,
+        // *    Terminating the process.
+        case WM_HOTKEY: {
+            
+            // The `wParam` paramter stores the identifier of the 
+            // hotkey.
+            switch(wParam) {
+                case MIRAGE_HOTKEY_TOGGLE: {
+                    if (metric.display == DEBUG_OFF) {
+                        metric.display = DEBUG_ON;
+                        
+                    } else {
+                        metric.display = DEBUG_OFF;
+                        
+                    }
+                    break;
+                    
+                }
+                
+                case MIRAGE_HOTKEY_TERMINATE: {
+                    PostQuitMessage(MIRAGE_OK);
+                    break;
+                    
+                }
+            }
+            break;
         }
         case WM_DESTROY: {
             MirageError code = MIRAGE_OK;
@@ -519,8 +638,9 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                     || DeleteObject(backbuffer.hb) == 0
                     || DeleteDC(atlas.memoryDc) == 0
                     || DeleteObject(atlas.hb) == 0
-                    || DeleteObject(debug.hf) == 0) {
-                
+                    || DeleteObject(debug.hf) == 0
+                    || UnregisterHotKey(hwnd, MIRAGE_HOTKEY_TOGGLE) == 0
+                    || UnregisterHotKey(hwnd, MIRAGE_HOTKEY_TERMINATE) == 0) {
                 code = MIRAGE_INVALID_FREE;
                 
             }
@@ -533,73 +653,160 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             PAINTSTRUCT ps[1];
             RECT wRect;
             HFONT oldFont;
+            sScene const *s;
             size_t i;
-            const unsigned short *p;
+            unsigned char prevMoldId;
             
             hdc = BeginPaint(hwnd, ps);
-            SetStretchBltMode(hdc, COLORONCOLOR); // Makes rendering 
-                                                  // less 
-                                                  // CPU-intensive.
-                                                  // Don't bother if 
-                                                  // the function call 
-                                                  // fails.
             
-            // Render on the backbuffer.
-            // XXX: Is it necessary to constantly select things?
-            // XXX: Change to properly render sprites from the atlas.
-            SelectObject(atlas.memoryDc, atlas.hb);
-            if (!BitBlt(backbuffer.memoryDc, 300, 0, 316, 16, 
-                    atlas.memoryDc, 0, 0, SRCCOPY)) {
-                PANIC("The process failed to draw a sprite.",
-                    MIRAGE_BACKBUFFER_WRITE_FAIL);
+            // Makes rendering less CPU-intensive. Don't bother if 
+            // the function call fails.
+            SetStretchBltMode(hdc, COLORONCOLOR);
+            
+            s = (sScene*) GetWindowLongPtr(hwnd, 0);
+            
+            // A call to the `GetWindowLongPtr` function can return 
+            // zero if it fails.
+            if (s == NULL) {
+                PANIC("The process could not set a window attribute.",
+                    MIRAGE_WINDOW_GET_ATTRIBUTE_FAIL);
                 break;
                 
             }
             
-            if (!BitBlt(backbuffer.memoryDc, 0, 0, metric.bmp.w, metric.bmp.h,
-                    debug.memoryDc, 0, 0, SRCCOPY)) {
-                PANIC("The process failed to render the debug interface",
-                    MIRAGE_BACKBUFFER_WRITE_FAIL);
+            // XXX: Is it necessary to reselect the backbuffer's 
+            // bitmap in its memory device context?
+            SelectObject(backbuffer.memoryDc, backbuffer.hb);
+            // XXX: Black out of the screen. Is this step necessary?
+            if (!BitBlt(backbuffer.memoryDc, 0, 0, VIEWPORT_WIDTH, 
+                    VIEWPORT_HEIGHT, backbuffer.memoryDc, 0, 0, BLACKNESS)) {
+                PANIC("The process failed to set the entire backbuffer to "
+                    "black.", MIRAGE_BACKBUFFER_BLACK_OUT_FAIL);
                 break;
                 
             }
             
-            oldFont = SelectObject(backbuffer.memoryDc, debug.hf);
-            SetTextColor(backbuffer.memoryDc, RGB(255, 255, 255));
-            SetBkColor(backbuffer.memoryDc, RGB(0, 0, 0));
-            for (i = 0, p = &perfStats.fps; 
-                    i != METRICS; 
-                    ++i) {
-                unsigned short n = p[i], j = 7 - 2; // Remove suffix
-                char buffer[8] = "        ";
+            // Display all sprites that can appear in the viewport.
+            for (i = 0, prevMoldId = MOLD_NULL; i < SPRITES; ++i) {
+                sSprite const sprite = s->actorData.actor[i];
                 
-                memcpy(&buffer[0] + 6, &metric.suffix[i], 
-                    sizeof *metric.suffix);
-                
-                do {
-                    buffer[j] = (char)(n%10 + '0');
-                    --j;
-                } while (n /= 10);
-                
-                if (!TextOut(backbuffer.memoryDc, 
-                        (int) metric.labelPels[i], 
-                        (int)(metric.font.h * i) - (int)i,
-                        &buffer[j] + 1, 7-j)) {
-                    PANIC("The process failed to render the debug interface",
-                        MIRAGE_BACKBUFFER_METRIC_FAIL);
-                    break;
+                // A mold identifier equal to zero outside the mold 
+                // directory identifies a null sprite.
+                if (sprite.moldId != MOLD_NULL) {
+                    sMold const mold = s->md.data[sprite.moldId];
+                    
+                    if (sprite.moldId != prevMoldId) {
+                        // Ignore the return value as what the device 
+                        // context previously selected is not 
+                        // important.
+                        SelectObject(atlas.memoryDc, mold.hb);
+                        
+                    }
+                    // Otherwise, the previous iteration already 
+                    // selected the source bitmap for the block 
+                    // transfer.
+                    
+                    // XXX: Consider the position of the player when 
+                    // calculating the screen position of sprites. The 
+                    // player's camera affects which sprites are 
+                    // visible.
+                    // XXX: Do not perform a block transfer if the 
+                    // sprite is offscreen? The `BitBlt` function does 
+                    // handle this logic, but skipping it saves a 
+                    // function call.
+                    // XXX: Sprites reaching the left-most part of the 
+                    // viewport should not render outside the screen.
+                    if (!BitBlt(backbuffer.memoryDc, 
+                            sprite.pos.x, 
+                            VIEWPORT_HEIGHT - sprite.pos.y - mold.h,
+                            mold.w, mold.h,
+                            atlas.memoryDc, 
+                            sprite.animFrame * mold.h, 
+                            0, SRCCOPY)) {
+                        PANIC("The process failed to draw a sprite.",
+                            MIRAGE_BACKBUFFER_WRITE_SPRITE_FAIL);
+                        break;
+                        
+                    }
+                    prevMoldId = sprite.moldId;
                     
                 }
             }
-            SelectObject(backbuffer.memoryDc, oldFont);
-            SelectObject(backbuffer.memoryDc, backbuffer.hb);
             
-            GetWindowRect(hwnd, &wRect);
+            if (metric.display == DEBUG_ON) {
+                unsigned short metricData[METRICS];
+                memcpy(&metricData, &perfStats, sizeof perfStats);
+                
+                // Assume that the horizontal position is at a lower 
+                // address then the vertical position.
+                memcpy(metricData + METRICS - 2, // X and Y coordinates
+                    &s->actorData.player.pos, sizeof s->actorData.player.pos);
+                
+                if (!BitBlt(backbuffer.memoryDc, 0, 0, DEBUG_WIDTH_PELS, 
+                        DEBUG_HEIGHT_PELS, debug.memoryDc, 0, 0, SRCCOPY)) {
+                    PANIC("The process failed to render the debug interface",
+                        MIRAGE_BACKBUFFER_WRITE_DEBUG_FAIL);
+                    break;
+                    
+                }
+            
+                // Update the metrics in the debug menu for the 
+                // current frame. This process is inefficient, 
+                // however. The process could be rendering the debug 
+                // metric texts only when their values update. This 
+                // strategy may minimize resource usage even further 
+                // at the cost of lag spikes. Any metric update would 
+                // trigger additional rendering logic, which would add 
+                // additional overhead. Including this overhead on 
+                // every frame effectively removes this risk. There is 
+                // no benchmarking data to support this claim, however.
+                oldFont = SelectObject(backbuffer.memoryDc, debug.hf);
+                SetTextColor(backbuffer.memoryDc, RGB(255, 255, 255));
+                SetBkColor(backbuffer.memoryDc, RGB(0, 0, 0));
+                
+                // Assume that the `fps` member is the first member 
+                // that appears in the structure.
+                for (i = 0; i != METRICS; ++i) {
+                    unsigned short n = metricData[i], j = 7 - 2;
+                    char buffer[8] = "        ";
+                    
+                    memcpy(&buffer[0] + 6, &metric.label[i].suffix, 
+                        sizeof metric.label[i].suffix);
+                    
+                    do {
+                        buffer[j] = (char)(n%10 + '0');
+                        --j;
+                    } while (n /= 10);
+                    
+                    if (!TextOut(backbuffer.memoryDc, 
+                            (int) metric.label[i].widthPels, 
+                            (int)(DEBUG_HEIGHT_PELS/METRICS * i) - (int)i,
+                            &buffer[j] + 1, 7-j)) {
+                        PANIC("The process failed to render the debug "
+                            "interface", MIRAGE_BACKBUFFER_METRIC_FAIL);
+                        break;
+                        
+                    }
+                }
+                
+                // Remember to select the initial font back into the 
+                // memory device context.
+                SelectObject(backbuffer.memoryDc, oldFont);
+                SelectObject(backbuffer.memoryDc, backbuffer.hb);
+            }
+            
+            // The process should not terminate the program if it 
+            // could not determine window dimensions. The rectangle 
+            // characterising the window's viewport is part of the 
+            // window's client portion. This part does not consider 
+            // the borders surrounding the viewport.
+            GetClientRect(hwnd, &wRect);
             
             // Render on the window.
-            if (!StretchBlt(hdc, 0, 0, wRect.right-wRect.left, 
-                    wRect.bottom-wRect.top, backbuffer.memoryDc, 
-                    0, 0, VIEWPORT_WIDTH, VIEWPORT_HEIGHT, SRCCOPY)) {
+            if (!StretchBlt(hdc, 0, 0, 
+                    wRect.right-wRect.left, wRect.bottom-wRect.top, 
+                    backbuffer.memoryDc, 0, 0, VIEWPORT_WIDTH, 
+                    VIEWPORT_HEIGHT, SRCCOPY)) {
                 PANIC("The process failed to refresh the window bitmap.",
                     MIRAGE_WINDOW_WRITE_FAIL);
                 break;

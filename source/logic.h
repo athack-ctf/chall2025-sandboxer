@@ -14,7 +14,12 @@ typedef struct {
 typedef struct {
     sCoord pos;
     struct {
-        signed char x, y, subX;
+        
+        // The eight most significant bits of any sprite's velocity 
+        // alter's the sprite's position. The lowest eight bits do not 
+        // affect the sprite's position.
+        signed short subX;
+        signed char y;
     } vel;
     
     unsigned char moldId;
@@ -45,6 +50,7 @@ typedef struct {
     TILE const *data;
     
     unsigned short w, h;
+    sCoord spawn;
 } sLevel;
 
 typedef struct {

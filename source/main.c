@@ -48,7 +48,6 @@ static void updatePerfStats(HANDLE hproc,
 LRESULT CALLBACK WindowProcedure(HWND hwnd, unsigned int msg, WPARAM wParam,
     LPARAM lParam);
 
-// XXX: Implement a warning report system in a debug log?
 int main(void) {
     sClock clock = constuctClock();
     sContext game;

@@ -41,9 +41,6 @@ HBITMAP allocGfx(HDC sourceDc, BITMAPINFO *bi, unsigned int w,
 #include <handleapi.h>
 #include "global_dict.h"
 
-// XXX: Remove when sprites display actual pixel data.
-#define PIXELS 16
-
 // XXX: Finish implementing. Should initialise all molds in the 
 // struct from a file.
 MirageError formatAtlas(sMoldDirectory *md, HDC sourceDc, 
@@ -55,7 +52,7 @@ MirageError formatAtlas(sMoldDirectory *md, HDC sourceDc,
     unsigned long bytes;
     
     // XXX: Remove once sprites have actual pixel data to display.
-    sPixel pelData[PIXELS][PIXELS];
+    sPixel pelData[16][14];
     long tempWidth, tempHeight;
     HBITMAP hb;
     BITMAPINFOHEADER *bih;
@@ -86,8 +83,8 @@ MirageError formatAtlas(sMoldDirectory *md, HDC sourceDc,
     memset(&pelData, 0x55, sizeof(pelData));
     tempWidth = bih->biWidth;
     tempHeight = bih->biHeight;
-    bih->biWidth = PIXELS;
-    bih->biHeight = PIXELS;
+    bih->biWidth = 14;
+    bih->biHeight = 16;
     
     hb = CreateDIBitmap(sourceDc,
         bih,
@@ -105,9 +102,9 @@ MirageError formatAtlas(sMoldDirectory *md, HDC sourceDc,
     // the one for the player.
     // XXX: Actually load the bitmap for the animation frames.
     md->data[0].hb = (void*) hb;
-    md->data[0].w = PIXELS;
-    md->data[0].h = PIXELS;
+    md->data[0].w = 14;
+    md->data[0].h = 16;
     md->data[0].maxSpeed = 4;
-    md->data[0].subAccel = 50;
+    md->data[0].subAccel = 60;
     return MIRAGE_OK;
 }

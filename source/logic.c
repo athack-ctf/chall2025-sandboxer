@@ -30,9 +30,10 @@ void startContext(sContext *c) {
     player.pos.y = 32;
     player.moldId = 0; // XXX: Assume that the player uses a mold id 
                        // of zero.
-    player.vel.x = 0;
     player.vel.y = 0;
     player.vel.subX = 0;
+    
+    // The player begins by facing right.
     player.animFrame = 0;
     
     // XXX: Increase player health.
@@ -43,6 +44,7 @@ void startContext(sContext *c) {
     // XXX: Actually load a level instead of hard-coding values.
     c->scene.level.w = 200;
     c->scene.level.h = 32;
+    c->scene.level.spawn = player.pos;
     c->scene.level.data = levelData = calloc(sizeof*c->scene.level.data 
         * c->scene.level.w * c->scene.level.h, sizeof*c->scene.level.data);
     if (c->scene.level.data == NULL) {
@@ -54,6 +56,10 @@ void startContext(sContext *c) {
     for (i = 0; i < c->scene.level.w; ++i) {
         levelData[i * c->scene.level.h] = 1;
     }
+    levelData[2*c->scene.level.h] = 0;
+    levelData[1 + 4*c->scene.level.h] = 1;
+    levelData[2 + 4*c->scene.level.h] = 1;
+    levelData[3 + 4*c->scene.level.h] = 1;
     
     // Zero out all player input states. This configuration prevents 
     // guarantees that the game does not recognize any initial inputs.
@@ -63,11 +69,10 @@ void startContext(sContext *c) {
 }
 
 typedef struct {
-    char hittingCeil, hittingFloor, homingFloor;
+    char hittingCeil, hittingFloor, hittingLeft, hittingRight;
 } sCollision;
 
 static sSprite updatePlayer(sContext const *c);
-static sCollision collisionOf(sSprite const *s, sContext const *c);
 #define MAX_VALUE_OF_SIGNED(A) ~~( (1 << (CHAR_BIT*sizeof(A)-1)) - 1 )
 #define ABS(A) ~~((A)>0?(A):-(A))
 
@@ -86,87 +91,182 @@ void updateContext(sContext *c) {
 }
 
 #define PLAYER_WALK_COEF(VEL) ~~(1*(VEL)/ 2)
-#define PLAYER_FRICTION 10
+#define PLAYER_FRICTION 16
 #define PLAYER_JUMP_HOLD_FRAMES 18
+#define PLAYER_SLIDE_HOLD_FRAMES 32
 #define PLAYER_JUMP_VEL 7
 
+#define POS_TO_TILE_INDEX(X, Y, H) ~~((H)*((X)/TILE_PELS) + (Y)/TILE_PELS)
 static sSprite updatePlayer(sContext const *c) {
     sSprite p = c->scene.actorData.player;
     sMold const mold = c->scene.md.data[p.moldId];
-    sCollision const col = collisionOf(&c->scene.actorData.player, c);
-    sCoord nextPos = p.pos;
-    signed char const maxSpeed = (signed char) (c->input.key.run.holdDur ?
-        mold.maxSpeed : PLAYER_WALK_COEF(mold.maxSpeed));
+    sLevel const level = c->scene.level;
+    unsigned short const prevX = p.pos.x;
+    struct {
+        char floor, left, right;
+    } hitting;
+    signed short maxSpeed;
     
-    if (SUBVEL_WILL_OVERFLOW(p.vel.subX, mold.subAccel)) {
-        p.vel.subX > 0 ? p.vel.x++ : p.vel.x--;
+    // Update the position of the player, whether the player will 
+    // collide or not. The logic following these updates will rely on 
+    // these new coordinates to make decisions.
+    p.pos.x = (unsigned short)(p.pos.x + (p.vel.subX > 0 ? 
+        p.vel.subX+255 : p.vel.subX-255)/ 256);
+    p.pos.y = (unsigned short)(p.pos.y + p.vel.y);
+    
+    // Prevent players from underflowing their current position. Such 
+    // underflows can cause the collision detector to calculate 
+    // out-of-bounds tilemap indices.
+    if (p.vel.subX < 0 && prevX < p.pos.x) {
+        p.pos.x = 0;
         p.vel.subX = 0;
         
     }
     
-    if (col.hitCeil) {
-        if (p.vel.x != 0) {
-            p.vel.subX = (signed char)(p.vel.x>0 ? p.vel.subX-PLAYER_FRICTION 
-                : p.vel.subX+PLAYER_FRICTION);
-            
-        }
+    // Ditto, but for the player's vertical position.
+    if (p.vel.y < 0
+            && p.pos.y > (unsigned short)(p.pos.y - p.vel.y)) {
+        p.pos = level.spawn;
+        p.vel.subX = 0;
         p.vel.y = 0;
-        nextPos.y = (unsigned short)( ((nextPos.y+TILE_PELS-1)/TILE_PELS) 
-            * TILE_PELS);
+        
+    }
+    
+    // XXX: Reuse logic above to keep the player within the bounds of 
+    // the level?
+    
+    hitting.floor = level.data[POS_TO_TILE_INDEX(p.pos.x, p.pos.y-1, 
+        level.h)] > 0
+        || level.data[POS_TO_TILE_INDEX(p.pos.x + mold.w-1,
+        p.pos.y-1, level.h)] > 0;
+    
+    if (c->input.key.run.holdDur) {
+        maxSpeed = (signed short) (mold.maxSpeed<<8);
         
     } else {
-        p.vel.y = (signed char)(p.vel.y-MOB_GRAVITY);
-        if (p.vel.y < -MOB_MAX_SPEED_Y) {
-            p.vel.y = -MOB_MAX_SPEED_Y;
+        maxSpeed = (signed short) PLAYER_WALK_COEF(mold.maxSpeed<<8);
+        
+    }
+    
+    if (hitting.floor) {
+        
+        if (c->input.key.jump.holdDur == 1) {
+            p.vel.y = PLAYER_JUMP_VEL;
+            
+        } else {
+            p.vel.y = 0;
+            
+        }
+        p.pos.y = (unsigned short)( ((p.pos.y + TILE_PELS-1)/TILE_PELS) 
+            * TILE_PELS );
+        
+        if (p.vel.subX != 0) {
+            
+            // Sliding cancels out all friction.
+            if (c->input.key.slide.holdDur == 1
+                    || (c->input.key.slide.holdDur < PLAYER_SLIDE_HOLD_FRAMES
+                    && c->input.key.slide.holdDur > 0
+                    &&((c->input.key.left.holdDur&&!c->input.key.right.holdDur
+                    &&p.vel.subX>>8==-mold.maxSpeed)
+                    || (c->input.key.right.holdDur&&!c->input.key.left.holdDur 
+                    &&p.vel.subX>>8==mold.maxSpeed)))) {
+                maxSpeed = (signed short) (mold.maxSpeed<<8);
+                
+                if (c->input.key.right.holdDur&&!c->input.key.left.holdDur) {
+                    p.vel.subX = (signed short) maxSpeed;
+                    
+                } else if (c->input.key.left.holdDur) {
+                    p.vel.subX = (signed short) -maxSpeed;
+                
+                }
+                
+            } else {
+                int const goingRight = p.vel.subX > 0;
+                
+                p.vel.subX = (signed short)(goingRight ? 
+                    p.vel.subX-PLAYER_FRICTION : p.vel.subX+PLAYER_FRICTION);
+                
+                // Reset the player velocity if friction causes a 
+                // change in orientation.
+                if (goingRight ^ (p.vel.subX > 0)) {
+                    p.vel.subX = 0;
+                    
+                }
+                
+                // Switch the animation frame's direction if the 
+                // velocity and the sprite's orientation are opposite.
+                // XXX: Add logic for mirroring sprites.
+                // if (goingRight ^ (p.animFrame>=0)) {
+                    // p.animFrame = (signed char)~p.animFrame;
+                    
+                // }
+                
+            }
+        }
+        
+    } else {
+        if (p.vel.y == +PLAYER_JUMP_VEL 
+                && c->input.key.jump.holdDur > 0
+                && c->input.key.jump.holdDur < PLAYER_JUMP_HOLD_FRAMES) {
+            p.vel.y = PLAYER_JUMP_VEL;
+            
+        } else {
+            p.vel.y = (signed char)(p.vel.y-MOB_GRAVITY);
+            if (p.vel.y < -MOB_MAX_SPEED_Y) {
+                p.vel.y = -MOB_MAX_SPEED_Y;
+                
+            }
             
         }
         
     }
     
-    if (p.vel.x < -maxSpeed) {
-        p.vel.x = (signed char) -maxSpeed;
+    // Evaluate left and right collisions after potentially snapping 
+    // the player to the ground.
+    hitting.left = level.data[POS_TO_TILE_INDEX(p.pos.x, p.pos.y, 
+        level.h)] > 0;
+    if (hitting.left) {
+        p.vel.subX = 0;
+        p.pos.x = (unsigned short)(((p.pos.x + TILE_PELS-1)/TILE_PELS)
+            *TILE_PELS);
         
-    } else if (p.vel.x > maxSpeed) {
-        p.vel.x = (signed char) maxSpeed;
-        
+    } else {
+        hitting.right = level.data[POS_TO_TILE_INDEX(p.pos.x + mold.w-1, 
+            p.pos.y, level.h)] > 0;
+        if (hitting.right) {
+            p.vel.subX = 0;
+            
+            // Set the coordinate of the player's bottom left pixel
+            // to a tile's coordinate.
+            p.pos.x = (unsigned short)((p.pos.x/TILE_PELS)*TILE_PELS);
+            
+            // Shift the player such that the bottom right pixel 
+            // is immediately before the tile.
+            p.pos.x = (unsigned short)(p.pos.x + (TILE_PELS-mold.w));
+            
+        }
     }
     
-    // The dynamics simulator must apply effects of jumping after 
-    // those of collision.
-    if (c->input.key.jump.holdDur 
-            && c->input.key.jump.holdDur < PLAYER_JUMP_HOLD_FRAMES) {
-        p.vel.y = PLAYER_JUMP_VEL;
-        
-    }
-    
+    // Change the sub-velocity if necessary to calculate the current 
+    // horizontal velocity.
     if (c->input.key.left.holdDur) {
-        p.vel.subX = (signed char)(p.vel.subX - mold.subAccel);
+        p.vel.subX = (signed short)(p.vel.subX - mold.subAccel);
         
     }
     if (c->input.key.right.holdDur) {
-        p.vel.subX = (signed char)(p.vel.subX + mold.subAccel);
+        p.vel.subX = (signed short)(p.vel.subX + mold.subAccel);
         
     }
     
-    nextPos.x = (unsigned short)(nextPos.x + p.vel.x);
-    nextPos.y = (unsigned short)(nextPos.y + p.vel.y);
-    p.pos = nextPos;
+    // The dynamics simulator must apply speed caps at the end of the 
+    // motion update.
+    if (p.vel.subX > maxSpeed) {
+        p.vel.subX = maxSpeed;
+        
+    } else if (p.vel.subX < -maxSpeed) {
+        p.vel.subX = (signed short) -maxSpeed;
+        
+    }
     
     return p;
-}
-
-static sCollision collisionOf(sSprite const *s, sContext const *c) {
-    sMold const m = c->scene.md.data[s->moldId];
-    unsigned int const h = c->scene.level.h;
-    // XXX: Consider the case where the sprite reaches y positon 0.
-    // Risk of underflow.
-    unsigned int const tIndexTop = h*(s->pos.x/TILE_PELS)
-        + (unsigned int)(s->pos.y-1)/TILE_PELS,
-        tIndexBottom = h*(s->pos.x/TILE_PELS)
-        + (unsigned int)(s->pos.y + m.h - 1)/TILE_PELS;
-    sCollision col = {
-        c->scene.level.data[tIndexTop] > 0,
-        c->scene.level.data[tIndexBottom] > 0
-    };
-    return col;
 }

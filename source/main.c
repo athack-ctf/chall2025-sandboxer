@@ -305,10 +305,13 @@ int main(void) {
             };
             int isDown = !!GetAsyncKeyState(keyId[i]);
             
+            // Assume that the first member is `right`.
+            sKey *a = &game.input.right;
+            
             // The game does not consider the first frame in the 
             // hold duration.
-            game.input.a[i].holdDur = (unsigned char) 
-                (isDown ? (game.input.a[i].holdDur + isDown)
+            a[i].holdDur = (unsigned char) 
+                (isDown ? (a[i].holdDur + isDown)
                 : 0);
         }
         updateContext(&game);

@@ -68,11 +68,8 @@ typedef struct {
 } sKey;
 typedef struct {
     sScene scene;
-    union {
-        struct {
-            sKey right, up, left, down, run, jump, slide;
-        } key;
-        sKey a[KEYS];
+    struct {
+        sKey right, up, left, down, run, jump, slide;
     } input;
 } sContext;
 

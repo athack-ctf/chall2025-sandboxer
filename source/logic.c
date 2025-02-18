@@ -91,7 +91,7 @@ void updateContext(sContext *c) {
 }
 
 #define PLAYER_WALK_COEF(VEL) ~~(1*(VEL)/ 2)
-#define PLAYER_FRICTION 16
+#define PLAYER_FRICTION 26
 #define PLAYER_JUMP_HOLD_FRAMES 18
 #define PLAYER_SLIDE_HOLD_FRAMES 32
 #define PLAYER_JUMP_VEL 7
@@ -101,11 +101,13 @@ static sSprite updatePlayer(sContext const *c) {
     sSprite p = c->scene.actorData.player;
     sMold const mold = c->scene.md.data[p.moldId];
     sLevel const level = c->scene.level;
-    unsigned short const prevX = p.pos.x;
-    struct {
-        char floor, left, right;
-    } hitting;
+    sCoord const prev = p.pos;
     signed short maxSpeed;
+    struct {
+        struct {
+            char left, right;
+        } floor, above, bottom;
+    } hitting;
     
     // Update the position of the player, whether the player will 
     // collide or not. The logic following these updates will rely on 
@@ -117,7 +119,7 @@ static sSprite updatePlayer(sContext const *c) {
     // Prevent players from underflowing their current position. Such 
     // underflows can cause the collision detector to calculate 
     // out-of-bounds tilemap indices.
-    if (p.vel.subX < 0 && prevX < p.pos.x) {
+    if (p.vel.subX < 0 && prev.x < p.pos.x) {
         p.pos.x = 0;
         p.vel.subX = 0;
         
@@ -131,16 +133,10 @@ static sSprite updatePlayer(sContext const *c) {
         p.vel.y = 0;
         
     }
-    
     // XXX: Reuse logic above to keep the player within the bounds of 
     // the level?
     
-    hitting.floor = level.data[POS_TO_TILE_INDEX(p.pos.x, p.pos.y-1, 
-        level.h)] > 0
-        || level.data[POS_TO_TILE_INDEX(p.pos.x + mold.w-1,
-        p.pos.y-1, level.h)] > 0;
-    
-    if (c->input.key.run.holdDur) {
+    if (c->input.run.holdDur) {
         maxSpeed = (signed short) (mold.maxSpeed<<8);
         
     } else {
@@ -148,34 +144,61 @@ static sSprite updatePlayer(sContext const *c) {
         
     }
     
-    if (hitting.floor) {
-        
-        if (c->input.key.jump.holdDur == 1) {
+    // There are two ways to cause the player to snap to the ground. 
+    // One way first requires the player to bear a vertical velocity 
+    // of zero. Then, the game checks whether the player is directly 
+    // under a solid tile. The player snaps to the ground under these 
+    // conditions. Another avenue trigger this behaviour exists that 
+    // does not involve velocities. This alternative requires the 
+    // pixel row below the player to touch a solid tile. Here, the 
+    // player snaps if a non-solid tile is directly above the solid 
+    // tile. The player must also be falling at the speed of their 
+    // jump. This last condition guarantees to ground the player when 
+    // they are jumping in place. Note that there is a caveat with 
+    // this collision detection algorithm. Is it possible for the 
+    // player to clip inside a wall and jump. This situation occurs if 
+    // the player has zero vertical velocity and hugs a wall. Note 
+    // that these conditions disregard whether the player is airborne 
+    // or not. As such, the player can jump off a wall with careful 
+    // timing.
+    hitting.floor.left = level.data[POS_TO_TILE_INDEX(p.pos.x, p.pos.y-1, 
+        level.h)] > 0;
+    hitting.floor.right = level.data[POS_TO_TILE_INDEX(p.pos.x+mold.w-1,
+        p.pos.y-1, level.h)] > 0;
+    hitting.above.left = level.data[POS_TO_TILE_INDEX(p.pos.x, 
+        p.pos.y+TILE_PELS-1, level.h)] > 0;
+    hitting.above.right = level.data[POS_TO_TILE_INDEX(p.pos.x+mold.w-1, 
+        p.pos.y+TILE_PELS-1, level.h)] > 0;
+    if (((hitting.floor.left||hitting.floor.right)&&p.vel.y==0)
+            || (p.vel.y <= -PLAYER_JUMP_VEL
+            &&( ((hitting.floor.left&&!hitting.above.left)
+            ||(hitting.floor.right&&!hitting.above.right)) ))) {
+        if (c->input.jump.holdDur == 1) {
             p.vel.y = PLAYER_JUMP_VEL;
             
         } else {
             p.vel.y = 0;
+            p.pos.y = (unsigned short)( ((p.pos.y + TILE_PELS-1)/TILE_PELS) 
+                * TILE_PELS );
             
         }
-        p.pos.y = (unsigned short)( ((p.pos.y + TILE_PELS-1)/TILE_PELS) 
-            * TILE_PELS );
         
         if (p.vel.subX != 0) {
             
             // Sliding cancels out all friction.
-            if (c->input.key.slide.holdDur == 1
-                    || (c->input.key.slide.holdDur < PLAYER_SLIDE_HOLD_FRAMES
-                    && c->input.key.slide.holdDur > 0
-                    &&((c->input.key.left.holdDur&&!c->input.key.right.holdDur
+            if (c->input.slide.holdDur == 1
+                    || ( c->input.slide.holdDur < PLAYER_SLIDE_HOLD_FRAMES
+                    && c->input.slide.holdDur > 0
+                    && ((c->input.left.holdDur
                     &&p.vel.subX>>8==-mold.maxSpeed)
-                    || (c->input.key.right.holdDur&&!c->input.key.left.holdDur 
-                    &&p.vel.subX>>8==mold.maxSpeed)))) {
+                    ||(c->input.right.holdDur
+                    &&p.vel.subX>>8==mold.maxSpeed)) )) {
                 maxSpeed = (signed short) (mold.maxSpeed<<8);
                 
-                if (c->input.key.right.holdDur&&!c->input.key.left.holdDur) {
+                if (c->input.right.holdDur) {
                     p.vel.subX = (signed short) maxSpeed;
                     
-                } else if (c->input.key.left.holdDur) {
+                } else {
                     p.vel.subX = (signed short) -maxSpeed;
                 
                 }
@@ -205,9 +228,11 @@ static sSprite updatePlayer(sContext const *c) {
         }
         
     } else {
+        // XXX: Implement collision for hitting ceilings.
+        
         if (p.vel.y == +PLAYER_JUMP_VEL 
-                && c->input.key.jump.holdDur > 0
-                && c->input.key.jump.holdDur < PLAYER_JUMP_HOLD_FRAMES) {
+                && c->input.jump.holdDur > 0
+                && c->input.jump.holdDur < PLAYER_JUMP_HOLD_FRAMES) {
             p.vel.y = PLAYER_JUMP_VEL;
             
         } else {
@@ -223,17 +248,18 @@ static sSprite updatePlayer(sContext const *c) {
     
     // Evaluate left and right collisions after potentially snapping 
     // the player to the ground.
-    hitting.left = level.data[POS_TO_TILE_INDEX(p.pos.x, p.pos.y, 
+    hitting.bottom.left = level.data[POS_TO_TILE_INDEX(p.pos.x, p.pos.y, 
         level.h)] > 0;
-    if (hitting.left) {
+    if (hitting.bottom.left) {
+        
         p.vel.subX = 0;
         p.pos.x = (unsigned short)(((p.pos.x + TILE_PELS-1)/TILE_PELS)
             *TILE_PELS);
         
     } else {
-        hitting.right = level.data[POS_TO_TILE_INDEX(p.pos.x + mold.w-1, 
+        hitting.bottom.right = level.data[POS_TO_TILE_INDEX(p.pos.x+mold.w-1, 
             p.pos.y, level.h)] > 0;
-        if (hitting.right) {
+        if (hitting.bottom.right) {
             p.vel.subX = 0;
             
             // Set the coordinate of the player's bottom left pixel
@@ -249,11 +275,11 @@ static sSprite updatePlayer(sContext const *c) {
     
     // Change the sub-velocity if necessary to calculate the current 
     // horizontal velocity.
-    if (c->input.key.left.holdDur) {
+    if (c->input.left.holdDur) {
         p.vel.subX = (signed short)(p.vel.subX - mold.subAccel);
         
     }
-    if (c->input.key.right.holdDur) {
+    if (c->input.right.holdDur) {
         p.vel.subX = (signed short)(p.vel.subX + mold.subAccel);
         
     }

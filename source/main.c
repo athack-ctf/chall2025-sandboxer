@@ -344,7 +344,7 @@ int main(void) {
 #define DEBUG_WIDTH_PELS ~~(VIEWPORT_WIDTH/2)
 #define DEBUG_HEIGHT_PELS ~~(5*VIEWPORT_HEIGHT/12)
 #define FONT_DEBUG_HEIGHT_PELS ~~(DEBUG_HEIGHT_PELS/METRICS)
-#define METRICS 9  // Including two for the player's x and y.
+#define METRICS 9U  // Including two for the player's x and y.
 
 LRESULT CALLBACK WindowProcedure(HWND hwnd,
         unsigned int message,
@@ -401,7 +401,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             BITMAPINFO bi;
             RECT debugRect;
             size_t i, lastIndex, labels, maxLen;
-            HFONT oldFont;
+            HFONT initialFont;
             sMoldDirectory *md;
             char const metricLabelText[] =
                 "FPS:\n"
@@ -416,7 +416,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             char const fontDebug[] = "Courier New";
             unsigned char fontDebugWidthPels;
             
-            bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bi.bmiHeader.biSize = sizeof bi.bmiHeader;
             bi.bmiHeader.biWidth = VIEWPORT_WIDTH;
             bi.bmiHeader.biHeight = VIEWPORT_HEIGHT;
             bi.bmiHeader.biPlanes = 1;
@@ -446,30 +446,47 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             // one-by-one pixel monochrome bitmap.
             backbuffer.memoryDc = CreateCompatibleDC(hdc);
             
-            // Select the bitmap for the memory device context into said 
-            // device context. The device context will store the 
-            // backbuffer bitmap after this function call.
-            // XXX: Get back the original 1x1 bitmap that the 
-            // `SelectObject` function call returns?
-            SelectObject(backbuffer.memoryDc, backbuffer.hb);
-            atlas.memoryDc = CreateCompatibleDC(backbuffer.memoryDc);
+            // Any device context can contain one of each type of 
+            // graphic object. The process will leave the backbuffer's 
+            // device context as selecting its bitmap. Ensure to 
+            // delete the default one-by-one monochrome bitmap.
+            if (DeleteObject(SelectObject(backbuffer.memoryDc, backbuffer.hb))
+                    == 0) {
+                PANIC("The process failed to delete the backbuffer's default"
+                    "monochrome bitmap.", MIRAGE_DELETE_DEFAULT_BITMAP_FAIL);
+                break;
+                
+            }
             
             // The `lParam` parameter stores a pointer to a 
             // `CREATESTRUCT` instance. The window creation procedure 
             // set the `lpCreateParams` member in this struct to a
             // pointer. This member stores the address of an 
             // `sMoldDirectory` structure instance.
-            // XXX: Initialise mold directory.
             md = (sMoldDirectory*) ((CREATESTRUCT*)lParam)->lpCreateParams;
-            if (formatAtlas(md, backbuffer.memoryDc, &bi) != MIRAGE_OK) {
-                // XXX: Change error message.
-                PANIC("Failed to load the test graphic.",
-                    MIRAGE_TEXTURE_INIT_FAIL);
+            if (initMoldData(md, backbuffer.memoryDc, &bi)) {
+                // The `initMoldData` function call is responsible for 
+                // posting the quit message.
                 break;
                 
             }
             
-            metric.display = DEBUG_OFF;
+            atlas.memoryDc = CreateCompatibleDC(backbuffer.memoryDc);
+            atlas.hb = initAtlas(atlas.memoryDc, &bi);
+            if (atlas.hb == NULL) {
+                // The `initAtlas` function is responsible for posting 
+                // the quit message.
+                break;
+                
+            }
+            if (DeleteObject(SelectObject(atlas.memoryDc, atlas.hb))
+                    == 0) {
+                PANIC("The process failed to delete the tile atlas' default "
+                    "monochrome bitmap.", MIRAGE_DELETE_DEFAULT_BITMAP_FAIL);
+                break;
+                
+            }
+            
             for (i = 0, maxLen = 0, lastIndex = 0, labels = 0; 
                     labels < ARRAY_ELEMENTS(metric.label); 
                     ++i) {
@@ -494,18 +511,28 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                 (DEBUG_WIDTH_PELS / (maxLen+DEBUG_METRIC_CHARS));
             
             for (i = 0; i < METRICS; ++i) {
-                metric.label[i].widthPels = (unsigned short) (
-                    metric.label[i].widthPels * fontDebugWidthPels);
+                metric.label[i].widthPels = (unsigned short)
+                    (metric.label[i].widthPels * fontDebugWidthPels);
             }
             
             // The pixel data of debug interface is initially a 
             // one-by-one monochrome bitmap.
             debug.memoryDc = CreateCompatibleDC(backbuffer.memoryDc);
+            // XXX: Check for null?
+            
             debug.hb = allocGfx(backbuffer.memoryDc, &bi, DEBUG_WIDTH_PELS, 
                 DEBUG_HEIGHT_PELS);
             if (debug.hb == NULL) {
                 PANIC("Failed to load the debug menu pixel data.",
                     MIRAGE_INVALID_DEBUG_PELDATA);
+                break;
+                
+            }
+            
+            // Delete the default one-by-one monochrome bitmap.
+            if (DeleteObject(SelectObject(debug.memoryDc, debug.hb)) == 0) {
+                PANIC("The process failed to delete the debug menu's default"
+                    "monochrome bitmap.", MIRAGE_DELETE_DEFAULT_BITMAP_FAIL);
                 break;
                 
             }
@@ -532,52 +559,44 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                 
             }
             
-            oldFont = SelectObject(backbuffer.memoryDc, debug.hf);
+            initialFont = SelectObject(debug.memoryDc, debug.hf);
+            
             #undef HGDI_ERROR
             #define HGDI_ERROR (HFONT)-1
-            if (oldFont == NULL || oldFont == HGDI_ERROR) {
+            if (initialFont == NULL || initialFont == HGDI_ERROR) {
                 PANIC("Cannot access the debug font.",
                     MIRAGE_LOST_DEBUG_FONT);
                 break;
                 
             }
             
+            // The device context of the debug menu can delete the 
+            // default font without issue.
+            if (DeleteObject(initialFont) == 0) {
+                PANIC("The window initialisation procedure failed to delete "
+                    "the debug menu's default font.", 
+                    MIRAGE_DELETE_DEFAULT_FONT_FAIL);
+                break;
+                
+            }
+            
             // Don't bother if the process could not modify font 
             // attributes.
-            SetTextColor(backbuffer.memoryDc, RGB(255, 255, 255));
-            SetBkColor(backbuffer.memoryDc, RGB(0, 0, 0));
+            SetTextColor(debug.memoryDc, RGB(255, 255, 255));
+            SetBkColor(debug.memoryDc, RGB(0, 0, 0));
             
             debugRect.top = 0;
             debugRect.left = 0;
             debugRect.right = DEBUG_WIDTH_PELS;
             debugRect.bottom = DEBUG_HEIGHT_PELS;
             
-            // Render text over the backbuffer.
-            if (DrawText(backbuffer.memoryDc, 
+            // Render text over the debug menu's bitmap.
+            if (DrawText(debug.memoryDc, 
                     metricLabelText, 
                     ARRAY_ELEMENTS(metricLabelText), 
                     &debugRect, 
                     DT_LEFT) == 0) {
-                PANIC("Debug text render fail.",
-                    MIRAGE_CANNOT_RENDER_FONT);
-                break;
-                
-            }
-            SelectObject(backbuffer.memoryDc, oldFont);
-            SelectObject(backbuffer.memoryDc, backbuffer.hb);
-            
-            // Assign the debug interface bitmap to the debug memory 
-            // device context.
-            SelectObject(debug.memoryDc, debug.hb);
-            
-            // Write the text data from the backbuffer to the debug 
-            // interface's bitmap. This action effectively renders 
-            // text to the debug menu's bitmap.
-            if (!BitBlt(debug.memoryDc, 0, 0, DEBUG_WIDTH_PELS, 
-                    DEBUG_HEIGHT_PELS, backbuffer.memoryDc, 0, 0, SRCCOPY)) {
-                PANIC("Failed to transfer the backbuffer bitmap's data to "
-                    "the debug interface's bitmap.", 
-                    MIRAGE_DEBUG_FROM_BACKBUFFER_FAIL);
+                PANIC("Debug label render fail.", MIRAGE_CANNOT_RENDER_FONT);
                 break;
                 
             }
@@ -635,6 +654,8 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
         case WM_DESTROY: {
             MirageError code = MIRAGE_OK;
             
+            // XXX: Delete monochrom bitmaps.
+            // XXX: Delete all mold bitmaps.
             // XXX: Delete fonts.
             if (DeleteDC(backbuffer.memoryDc) == 0
                     || DeleteObject(backbuffer.hb) == 0
@@ -654,7 +675,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
         case WM_PAINT: {
             PAINTSTRUCT ps[1];
             RECT wRect;
-            HFONT oldFont;
+            HDC spriteMemDc;
             sScene const *s;
             size_t i;
             unsigned char prevMoldId;
@@ -676,10 +697,8 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                 
             }
             
-            // XXX: Is it necessary to reselect the backbuffer's 
-            // bitmap in its memory device context?
-            SelectObject(backbuffer.memoryDc, backbuffer.hb);
-            // XXX: Black out of the screen. Is this step necessary?
+            // The window initialisation procedure left the 
+            // backbuffer's bitmap as selected in the device context.
             if (!BitBlt(backbuffer.memoryDc, 0, 0, VIEWPORT_WIDTH, 
                     VIEWPORT_HEIGHT, backbuffer.memoryDc, 0, 0, BLACKNESS)) {
                 PANIC("The process failed to set the entire backbuffer to "
@@ -688,20 +707,27 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                 
             }
             
+            // Display all tiles in the viewport.
+            
+            
             // Display all sprites that can appear in the viewport.
+            spriteMemDc = CreateCompatibleDC(backbuffer.memoryDc);
             for (i = 0, prevMoldId = MOLD_NULL; i < SPRITES; ++i) {
-                sSprite const sprite = s->actorData.actor[i];
+                sActor const actor = s->actorData.actor[i];
                 
                 // A mold identifier equal to zero outside the mold 
-                // directory identifies a null sprite.
-                if (sprite.moldId != MOLD_NULL) {
-                    sMold const mold = s->md.data[sprite.moldId];
+                // directory identifies a null actor.
+                if (actor.moldId != MOLD_NULL) {
+                    sMold const mold = s->md.data[actor.moldId];
+                    POINT para[3];
+                    unsigned char frameIndex;
                     
-                    if (sprite.moldId != prevMoldId) {
+                    if (actor.moldId != prevMoldId) {
                         // Ignore the return value as what the device 
                         // context previously selected is not 
-                        // important.
-                        SelectObject(atlas.memoryDc, mold.hb);
+                        // important. These values include default 
+                        // graphic objects.
+                        SelectObject(spriteMemDc, mold.s.color);
                         
                     }
                     // Otherwise, the previous iteration already 
@@ -713,27 +739,51 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                     // player's camera affects which sprites are 
                     // visible.
                     // XXX: Do not perform a block transfer if the 
-                    // sprite is offscreen? The `BitBlt` function does 
+                    // actor is offscreen? The `BitBlt` function does 
                     // handle this logic, but skipping it saves a 
                     // function call.
                     // XXX: Sprites reaching the left-most part of the 
                     // viewport should not render outside the screen.
-                    if (!BitBlt(backbuffer.memoryDc, 
-                            sprite.pos.x, 
-                            VIEWPORT_HEIGHT - sprite.pos.y - mold.h,
+                    
+                    if (actor.frame > -1) {
+                        para[0].x = actor.pos.x;
+                        para[0].y = VIEWPORT_HEIGHT - actor.pos.y - mold.h;
+                        para[1].x = actor.pos.x + mold.w;
+                        para[1].y = VIEWPORT_HEIGHT - actor.pos.y - mold.h;
+                        para[2].x = actor.pos.x;
+                        para[2].y = VIEWPORT_HEIGHT - actor.pos.y;
+                        
+                        frameIndex = (unsigned char)actor.frame;
+                    } else {
+                        para[0].x = actor.pos.x + mold.w;
+                        para[0].y = VIEWPORT_HEIGHT - actor.pos.y - mold.h;
+                        para[1].x = actor.pos.x;
+                        para[1].y = VIEWPORT_HEIGHT - actor.pos.y - mold.h;
+                        para[2].x = actor.pos.x + mold.w;
+                        para[2].y = VIEWPORT_HEIGHT - actor.pos.y;
+                        
+                        frameIndex = (unsigned char)~actor.frame;
+                    }
+                    
+                    // XXX: Not reflecting correctly, seems to cut off 
+                    // the sprite's back.
+                    if (!PlgBlt(backbuffer.memoryDc, 
+                            para,
+                            spriteMemDc,
+                            0, frameIndex*mold.h,
                             mold.w, mold.h,
-                            atlas.memoryDc, 
-                            sprite.animFrame * mold.h, 
-                            0, SRCCOPY)) {
+                            mold.s.mask,
+                            0, frameIndex*mold.h)) {
                         PANIC("The process failed to draw a sprite.",
                             MIRAGE_BACKBUFFER_WRITE_SPRITE_FAIL);
                         break;
                         
                     }
-                    prevMoldId = sprite.moldId;
+                    prevMoldId = actor.moldId;
                     
                 }
             }
+            DeleteDC(spriteMemDc);
             
             if (metric.display == DEBUG_ON) {
                 unsigned short metricData[METRICS];
@@ -743,14 +793,6 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                 // address then the vertical position.
                 memcpy(metricData + METRICS - 2, // X and Y coordinates
                     &s->actorData.player.pos, sizeof s->actorData.player.pos);
-                
-                if (!BitBlt(backbuffer.memoryDc, 0, 0, DEBUG_WIDTH_PELS, 
-                        DEBUG_HEIGHT_PELS, debug.memoryDc, 0, 0, SRCCOPY)) {
-                    PANIC("The process failed to render the debug interface",
-                        MIRAGE_BACKBUFFER_WRITE_DEBUG_FAIL);
-                    break;
-                    
-                }
             
                 // Update the metrics in the debug menu for the 
                 // current frame. This process is inefficient, 
@@ -762,9 +804,6 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                 // additional overhead. Including this overhead on 
                 // every frame effectively removes this risk. There is 
                 // no benchmarking data to support this claim, however.
-                oldFont = SelectObject(backbuffer.memoryDc, debug.hf);
-                SetTextColor(backbuffer.memoryDc, RGB(255, 255, 255));
-                SetBkColor(backbuffer.memoryDc, RGB(0, 0, 0));
                 
                 // Assume that the `fps` member is the first member 
                 // that appears in the structure.
@@ -780,7 +819,9 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                         --j;
                     } while (n /= 10);
                     
-                    if (!TextOut(backbuffer.memoryDc, 
+                    // The window initialisation procedure already 
+                    // selected the debug menu's bitmap and font.
+                    if (!TextOut(debug.memoryDc, 
                             (int) metric.label[i].widthPels, 
                             (int)(DEBUG_HEIGHT_PELS/METRICS * i) - (int)i,
                             &buffer[j] + 1, 7-j)) {
@@ -791,10 +832,14 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                     }
                 }
                 
-                // Remember to select the initial font back into the 
-                // memory device context.
-                SelectObject(backbuffer.memoryDc, oldFont);
-                SelectObject(backbuffer.memoryDc, backbuffer.hb);
+                if (!BitBlt(backbuffer.memoryDc, 0, 0, DEBUG_WIDTH_PELS, 
+                        DEBUG_HEIGHT_PELS, debug.memoryDc, 0, 0, SRCCOPY)) {
+                    PANIC("The process failed to render the debug interface",
+                        MIRAGE_BACKBUFFER_WRITE_DEBUG_FAIL);
+                    break;
+                    
+                }
+                
             }
             
             // The process should not terminate the program if it 

@@ -4,9 +4,12 @@
 // misleading file name.
 #include <WinDef.h>
 #include <wingdi.h>
+#include <winuser.h>
 
 #include "global.h"
 #include "gfx.h"
+
+static int decodeGfx(sPixel *dst, HANDLE hf, unsigned long stridePixels);
 
 HBITMAP allocGfx(HDC sourceDc, BITMAPINFO *bi, unsigned int w, 
         unsigned int h) {
@@ -15,7 +18,6 @@ HBITMAP allocGfx(HDC sourceDc, BITMAPINFO *bi, unsigned int w,
     HBITMAP hb;
     BITMAPINFOHEADER *bih = &bi->bmiHeader;
     
-    // XXX: This temp strategy is terrible, but is there better?
     tempWidth = bih->biWidth;
     tempHeight = bih->biHeight;
     bih->biWidth = (LONG) w;
@@ -39,22 +41,24 @@ HBITMAP allocGfx(HDC sourceDc, BITMAPINFO *bi, unsigned int w,
 
 #include <fileapi.h>
 #include <handleapi.h>
+#include <memoryapi.h>
 #include "global_dict.h"
-
-static HBITMAP decodeGfx(HANDLE hf, BITMAPINFO const *bi, HDC hdc);
 
 // XXX: Finish implementing. Should initialise all molds in the 
 // struct from a file.
-MirageError formatAtlas(sMoldDirectory *md, HDC sourceDc, 
+int initMoldData(sMoldDirectory *dstMold, HDC sourceDc, 
         BITMAPINFO *bi) {
     
     // XXX: Clean up this variable mess.
     HANDLE hFile;
+    sPixel *pelBuffer;
     char buffer[64];
-    unsigned long bytes;
-    
+    struct {
+        unsigned long io, pelData;
+    } bytes;
     signed long tempWidth, tempHeight;
-    HBITMAP hb;
+    unsigned long pixels;
+    sSprite s;
     BITMAPINFOHEADER *bih;
     
     hFile = CreateFile(DIR_MOLDINFO, 
@@ -68,26 +72,19 @@ MirageError formatAtlas(sMoldDirectory *md, HDC sourceDc,
     // XXX: Fix to read proper amount of bytes. There is an 
     // indeterminate amount of molds to read.
     if (hFile == INVALID_HANDLE_VALUE
-            || !ReadFile(hFile, buffer, ARRAY_ELEMENTS(buffer), &bytes, 
+            || !ReadFile(hFile, buffer, ARRAY_ELEMENTS(buffer), &bytes.io, 
             NULL)) {
         CloseHandle(hFile);
-        return MIRAGE_NO_MOLDINFO;
+        PANIC("The process could not find actor mold data. "
+            "Expected a file in \""DIR_MOLDINFO"\".", 
+            MIRAGE_NO_MOLDINFO);
+        return 1;
         
     }
     
     // The process should not worry about whether a file closed 
     // properly or not.
     CloseHandle(hFile);
-    
-    bih = &bi->bmiHeader;
-    
-    tempWidth = bih->biWidth;
-    tempHeight = bih->biHeight;
-    
-    // XXX: Change dimensions according to the mold information 
-    // instead of hardcoding data.
-    bih->biWidth = 16;
-    bih->biHeight = 224;
     
     // XXX: Repeat file read for every sprite.
     hFile = CreateFile(DIR_GFX_GUY_NOTHING, 
@@ -99,10 +96,89 @@ MirageError formatAtlas(sMoldDirectory *md, HDC sourceDc,
         NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
         CloseHandle(hFile);
-        return MIRAGE_NO_GFX_SPRITE;
+        PANIC("The process could not locate sprite data.",
+            MIRAGE_NO_GFX_SPRITE);
+        return 1;
         
     }
-    hb = decodeGfx(hFile, bi, sourceDc);
+    
+    bih = &bi->bmiHeader;
+    tempWidth = bih->biWidth;
+    tempHeight = bih->biHeight;
+    
+    // XXX: Change dimensions according to the mold information 
+    // instead of hardcoding data.
+    bih->biWidth = 16;
+    bih->biHeight = 224;
+    pixels = (unsigned long)(bih->biWidth * bih->biHeight);
+    
+    // Implement memory reallocation system for sprite graphics.
+    bytes.pelData = (unsigned long)(pixels * (unsigned long)sizeof*pelBuffer);
+    pelBuffer = VirtualAlloc(NULL, bytes.pelData, MEM_COMMIT,
+        PAGE_READWRITE);
+    if (pelBuffer == NULL) {
+        CloseHandle(hFile);
+        PANIC("The process failed to reserve heap memory.",
+            MIRAGE_HEAP_ALLOC_FAIL);
+        return 1;
+        
+    }
+    
+    puts("Beginning sprite decoding.");
+    
+    if (decodeGfx(pelBuffer, hFile, pixels)) {
+        PANIC("The process failed to load sprite data.",
+            MIRAGE_LOAD_GFX_FAIL);
+        s.color = NULL;
+        
+    } else {
+        char *p;
+        unsigned long byteIndex, bitIndex;
+        
+        // Interpret as a bottom-up bitmap.
+        bih->biHeight = -bih->biHeight;
+        s.color = CreateDIBitmap(sourceDc, 
+            bih,
+            CBM_INIT,
+            pelBuffer,
+            bi,
+            DIB_RGB_COLORS);
+        bih->biHeight = -bih->biHeight;
+        
+        p = (char*)pelBuffer;
+        
+        // Assume that eight divides the total amount of pixels in 
+        // the source bitmap. This assumption does not matter here 
+        // since this total is a multiple of sixty-four.
+        // XXX: Pad rows to dwords?
+        for (bitIndex = 0, byteIndex = 0; 
+                bitIndex < (unsigned long) (bih->biWidth * bih->biHeight); 
+                ++byteIndex) {
+            signed int shift;
+            char byte = 0x00;
+            
+            for (shift = 7; shift >= 0; --shift, ++bitIndex) {
+                byte |= (char)((pelBuffer[bitIndex].a > 0) << shift);
+                
+            }
+            p[byteIndex] = byte;
+        }
+        
+        s.mask = CreateBitmap((signed int)bih->biWidth, 
+            (signed int)bih->biHeight, 1, 1, pelBuffer);
+        if (s.mask == NULL) {
+            PANIC("The process failed to load sprite mask data.",
+                MIRAGE_LOAD_MASK_FAIL);
+            // The window destruction procedure is responsible for 
+            // deallocating sprite bitmaps.
+            
+        }
+        
+    }
+    
+    // The process should not bother checking that the operating 
+    // system deallocated memory without issue.
+    VirtualFree(pelBuffer, bytes.pelData, MEM_RELEASE);
     
     // The process should not bother with recovering from an 
     // unsuccessful handle closure.
@@ -111,104 +187,88 @@ MirageError formatAtlas(sMoldDirectory *md, HDC sourceDc,
     bih->biWidth = tempWidth;
     bih->biHeight = tempHeight;
     
-    if (hb == NULL) {
-        return MIRAGE_LOAD_GFX_FAIL;
-        
-    }
-    
     // XXX: Only initialises the mold that the player will use. 
     // Add all other molds that sprites will use.
     // XXX: The directory mold identifier of zero is not necessarily 
     // the one for the player.
     // XXX: Actually load the bitmap for the animation frames.
-    md->data[0].hb = (void*) hb;
-    md->data[0].w = 16;
-    md->data[0].h = 17;
-    md->data[0].maxSpeed = 4;
-    md->data[0].subAccel = 60;
-    return MIRAGE_OK;
+    dstMold->data[0].s = s;
+    dstMold->data[0].w = 16;
+    dstMold->data[0].h = 17;
+    dstMold->data[0].maxSpeed = 4;
+    dstMold->data[0].subAccel = 60;
+    return 0;
 }
 
-#include <memoryapi.h>
+#define TILES_PER_GROUP 4U
+#define GROUP_PELS ~~(TILE_PELS*TILE_PELS*TILES_PER_GROUP)
+#define ALL_TILE_PELS ~~(TILE_PELS*TILE_PELS*UNIQUE_TILES)
 
-#define RGB24_PIXEL_BYTES 3
-
-static int translateBody(sPixel *dst, HANDLE hf, sPixel const *color);
-
-// XXX: Place `decodeGfx` before `translateBody`?
-static HBITMAP decodeGfx(HANDLE hf, BITMAPINFO const *bi, HDC hdc) {
-    struct {
-        unsigned long io, pelData;
-    } bytes;
-    unsigned long w, h, i;
-    sPixel *pixelBuffer;
+HBITMAP initAtlas(HDC sourceDc, BITMAPINFO *bi) {
     HBITMAP hb;
-    sPixel color[8];
+    HANDLE hf;
+    sPixel *pelBuffer;
+    unsigned long bufferBytes = ALL_TILE_PELS 
+        * (unsigned long) sizeof*pelBuffer;
     
-    // There can be at most seven different colours.
-    unsigned char byteBuffer[1 + RGB24_PIXEL_BYTES*7], colors;
-    
-    w = (unsigned long)bi->bmiHeader.biWidth;
-    h = (unsigned long)bi->bmiHeader.biHeight;
-    bytes.pelData = (unsigned long)(w*h*sizeof(*pixelBuffer));
-    pixelBuffer = VirtualAlloc(NULL, bytes.pelData, MEM_COMMIT,
-        PAGE_READWRITE);
-    if (pixelBuffer == NULL) {
+    pelBuffer = VirtualAlloc(NULL, bufferBytes, MEM_COMMIT, PAGE_READWRITE);
+    if (pelBuffer == NULL) {
+        PANIC("The process failed to reserve heap memory for decoding the "
+            "atlas.", MIRAGE_HEAP_ALLOC_FAIL);
         return NULL;
         
     }
     
-    // XXX: Remove once graphics work
-    memset(pixelBuffer, 0x55, bytes.pelData);
-    
-    // Begin by reading the amount of colours in the palette header.
-    // The buffer to store the amount of bytes that the operation can 
-    // be null. However, Windows 7 does not support this case.
-    if (!ReadFile(hf, &colors, sizeof colors, &bytes.io, NULL)) {
-        return NULL;
-        
-    }
-    
-    // The palette header describes pixel colours as RGB24. This 
-    // format stores a pixel with three bytes.
-    if (!ReadFile(hf, byteBuffer, (unsigned long) (RGB24_PIXEL_BYTES*colors), 
-            &bytes.io, NULL)) {
-        return NULL;
-        
-    }
-    
-    // The pixel bearing the index of zero is the transparent pixel. 
-    // The alpha distinguishes opaque colours from transparency.
-    memset(&color[0], 0x00, sizeof color[0]);
-    for (i = 1; i <= colors; ++i) {
-        color[i].a = 0xFF;
-        color[i].r = byteBuffer[RGB24_PIXEL_BYTES*i + 0];
-        color[i].g = byteBuffer[RGB24_PIXEL_BYTES*i + 1];
-        color[i].b = byteBuffer[RGB24_PIXEL_BYTES*i + 2];
-    }
-    
-    if (translateBody(pixelBuffer, hf, color)) {
-        hb = NULL;
+    hf = CreateFile(DIR_ATLAS, 
+        GENERIC_READ,
+        FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+        NULL,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+    if (hf == INVALID_HANDLE_VALUE) {
+        PANIC("The process could not locate the tile atlas.",
+            MIRAGE_NO_ATLAS);
         
     } else {
-        hb = CreateDIBitmap(hdc, 
-            &bi->bmiHeader,
-            CBM_INIT,
-            pixelBuffer,
-            bi,
-            DIB_RGB_COLORS);
+        signed long const tempWidth = bi->bmiHeader.biWidth, 
+            tempHeight = bi->bmiHeader.biHeight;
+        
+        bi->bmiHeader.biWidth = TILE_PELS;
+        bi->bmiHeader.biHeight = TILE_PELS*UNIQUE_TILES;
+        
+        if (decodeGfx(pelBuffer, hf, GROUP_PELS)) {
+            PANIC("The process failed to decode the tile atlas graphic "
+                "data.", MIRAGE_LOAD_ATLAS_FAIL);
+            
+        } else {
+            
+            // The resulting pixel data describes a bottom-up bitmap.
+            bi->bmiHeader.biHeight = -bi->bmiHeader.biHeight;
+            hb = CreateDIBitmap(sourceDc, 
+                &bi->bmiHeader,
+                CBM_INIT,
+                pelBuffer,
+                bi,
+                DIB_RGB_COLORS);
+            bi->bmiHeader.biHeight = -bi->bmiHeader.biHeight;
+            
+        }
+        CloseHandle(hf);
+        
+        bi->bmiHeader.biWidth = tempWidth;
+        bi->bmiHeader.biHeight = tempHeight;
         
     }
     
-    // The process should not bother checking whether it closed the 
-    // file correctly or not.
-    CloseHandle(hf);
-    
     // The process should not bother checking that the operating 
-    // system deallocated memory without issue.
-    VirtualFree(pixelBuffer, bytes.pelData, MEM_RELEASE);
+    // system deallocated memory properly.
+    VirtualFree(pelBuffer, bufferBytes, MEM_RELEASE);
+    
     return hb;
 }
+
+#define RGB24_PIXEL_BYTES 3
 
 #define CHUNK_PIXELS 64
 #define MASK_THERE_IS_TAIL 0x10
@@ -223,49 +283,143 @@ static HBITMAP decodeGfx(HANDLE hf, BITMAPINFO const *bi, HDC hdc) {
 #define DOUBLE_MASK_TAIL_LENGTH 0x3F
 #define DOUBLE_SHIFT_TAIL_LENGTH 0
 
-static int translateBody(sPixel *dst, HANDLE hf, sPixel const *color) {
+// XXX: Think of a better name?
+static int decodeGfx(sPixel *dst, HANDLE hf, unsigned long stridePixels) {
     struct {
         sPixel *head, *tail;
     } brush;
+    unsigned long ioBytes;
+    
+    // The file may consist of multiple repetitions of headers and 
+    // graphic body data. That is, the graphic can alter its own 
+    // palette data after some offset. Reading bytes from a file may 
+    // load in palette header data after pixel data. As such, the 
+    // state of the decoder must persist across changes in palette.
     struct {
-        unsigned long io, chunk;
-    } bytes;
-    struct {
+        
+        // XXX: Think of better naming and organisation.
         unsigned char pixelsLeftInChunk, colorIndex;
+        char thereIsTail;
+        enum {
+            PROBING_COLORS,
+            PROBING_BLUE,
+            PROBING_GREEN,
+            PROBING_RED
+        } parsingHeader;
+        unsigned char colors;
         struct {
             unsigned char head, tail;
+            unsigned long left;
         } pixels;
-        char thereIsTail;
+        
+        // The payload following the palette header can contain at most 
+        // eight different colours.
+        sPixel color[8];
     } state;
     
     // The buffer size for storing the contents of the graphic file 
-    // is arbitrary.
+    // is partly arbitrary.
     unsigned char buffer[128];
     
-    // The brushes are responsible for pointing to the next pixel to 
-    // write over.
+    printf("Understood stride of %lu\n", stridePixels);
+    
+    // A colour index of zero represents a transparent pixel.
+    memset(&state.color[0], 0x00, sizeof state.color[0]);
+    
+    // Set all alpha values of other colours to their maximum.
+    memset(&state.color[1], 0xFF, sizeof state.color - sizeof state.color[0]);
+    
+    // The algorithm begins by parsing a palette header.
+    state.colors = 255;
+    state.colorIndex = 1;
+    state.parsingHeader = PROBING_COLORS;
+    
+    // The brushes are responsible for pointing to the 
+    // next pixel to write over.
     brush.head = dst;
     brush.tail = dst + CHUNK_PIXELS-1;
     state.pixelsLeftInChunk = CHUNK_PIXELS;
     state.pixels.tail = 0;
+    state.pixels.left = stridePixels;
+    state.thereIsTail = 0;
     
-    // The cursor in the file must be at the byte immediately the 
-    // palette header.
     do {
-        unsigned long bufferIndex;
+        unsigned int bufferIndex;
         
-        if (!ReadFile(hf, buffer, sizeof buffer, &bytes.io, 
-                NULL)) {
+        // The palette header describes pixel colours as RGB24. This 
+        // format stores a pixel with three bytes.
+        if (!ReadFile(hf, buffer, sizeof buffer, &ioBytes, NULL)) {
             return 1;
             
         }
+        printf("Read %lu bytes.\n", ioBytes);
         
-        printf("read %lu bytes\n", bytes.io);
-        
-        for (bufferIndex = 0; bufferIndex < bytes.io; ) {
-            if (state.pixelsLeftInChunk != 0) {
-                unsigned char const byte = buffer[bufferIndex++];
-                printf("read byte %x\n", byte);
+        for (bufferIndex = 0; bufferIndex < ioBytes; ) {
+            unsigned char byte;
+            
+            if (state.pixelsLeftInChunk == 0) {
+                printf("Begin with a new chunk.\n");
+                state.pixelsLeftInChunk = CHUNK_PIXELS;
+                dst += CHUNK_PIXELS;
+                brush.head = dst;
+                brush.tail = dst + CHUNK_PIXELS-1;
+                state.pixels.left -= CHUNK_PIXELS;
+                
+                // Do not increment the byte index, as this phase 
+                // does not get information.
+                continue;
+                
+            } else if (state.pixels.left == 0) {
+                printf("Begin with another header.\n");
+                state.colorIndex = 1;
+                state.colors = 255;
+                state.parsingHeader = PROBING_COLORS;
+                state.pixels.left = stridePixels;
+                continue;
+                
+            } else {
+                byte = buffer[bufferIndex++];
+                
+            }
+            
+            // Allow one more color for capturing all colours in the 
+            // header.
+            if (state.colors) {
+                switch (state.parsingHeader) {
+                    case PROBING_COLORS: {
+                        state.colors = byte;
+                        state.parsingHeader = PROBING_BLUE;
+                        continue;
+                        
+                    }
+                    
+                    case PROBING_BLUE: {
+                        state.color[state.colorIndex].b = byte;
+                        state.parsingHeader = PROBING_GREEN;
+                        continue;
+                        
+                    }
+                    
+                    case PROBING_GREEN: {
+                        state.color[state.colorIndex].g = byte;
+                        state.parsingHeader = PROBING_RED;
+                        continue;
+                        
+                    }
+                    
+                    case PROBING_RED: {
+                        state.color[state.colorIndex].r = byte;
+                        state.parsingHeader = PROBING_BLUE;
+                        ++state.colorIndex;
+                        --state.colors;
+                        continue;
+                        
+                    }
+                    
+                    default:
+                }
+                
+            } else {
                 if (state.thereIsTail) {
                     state.pixels.head = (unsigned char)(state.pixels.head 
                         << DOUBLE_HIGH_HEAD_SHIFT)
@@ -277,9 +431,9 @@ static int translateBody(sPixel *dst, HANDLE hf, sPixel const *color) {
                     
                     state.pixelsLeftInChunk = (unsigned char)
                         (state.pixelsLeftInChunk - state.pixels.tail);
-                    printf("counted %u tail pixels\n", state.pixels.tail);
+                    
                     while (state.pixels.tail--) {
-                        *brush.tail-- = color[state.colorIndex];
+                        *brush.tail-- = state.color[state.colorIndex];
                     }
                     
                     // The algorithm covered the tail portion of the 
@@ -290,49 +444,30 @@ static int translateBody(sPixel *dst, HANDLE hf, sPixel const *color) {
                     state.colorIndex = (byte&MASK_COLOR) >> SHIFT_COLOR;
                     state.pixels.head = (byte&SINGLE_MASK_LENGTH) 
                         >> SINGLE_SHIFT_LENGTH;
-                    state.thereIsTail = !(byte&MASK_THERE_IS_TAIL);
-                    
-                    printf("infer color index %u\n", state.colorIndex);
-                    
+                    state.thereIsTail = byte&MASK_THERE_IS_TAIL;
                     if (state.thereIsTail) {
-                        printf("There is a tail!\n");
                         continue;
                         
                     }
                     
                 }
                 
-                state.pixelsLeftInChunk = (unsigned char) (
-                    state.pixelsLeftInChunk - state.pixels.head);
-                printf("counted %u head pixels\n", state.pixels.head);
+                state.pixelsLeftInChunk = (unsigned char) 
+                    (state.pixelsLeftInChunk - state.pixels.head);
+                
                 while (state.pixels.head--) {
-                    *brush.head++ = color[state.colorIndex];
+                    *brush.head++ = state.color[state.colorIndex];
                 }
-                printf("there are %u pixels to draw\n", state.pixelsLeftInChunk);
-                
-            } else {
-                unsigned long long i;
-                printf("parsed one chunk\nmemory dump:");
-                
-                for (i = 0; i < CHUNK_PIXELS; ++i) {
-                    if (i%16 == 0) {
-                        printf("\n");
-                    }
-                    printf("(0x%02x 0x%02x 0x%02x 0x%02x) ", dst[i].a,
-                        dst[i].r, dst[i].g, dst[i].b);
-                }
-                
-                
-                state.pixelsLeftInChunk = CHUNK_PIXELS;
-                dst += CHUNK_PIXELS;
-                brush.head = dst;
-                brush.tail = dst + CHUNK_PIXELS-1;
                 
             }
         }
         
-        
-    } while (bytes.io == sizeof buffer);
+        // The algorithm relies on the size of the file to determine 
+        // when to end.
+    } while (ioBytes == sizeof buffer);
     
-    return 0;
+    // The decoding procedure may end abruptly if a chunk did not 
+    // contain sixty-four pixels. The process may also prematurely end 
+    // if there are mismatching amounts of pixels.
+    return ioBytes == sizeof buffer;
 }

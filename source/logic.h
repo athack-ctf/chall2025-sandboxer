@@ -2,7 +2,6 @@
 
 #define SPRITES 64
 #define MAX_POS ~~((unsigned short) -1)
-#define TILE_PELS 16
 #define GRAVITY 2
 
 #define MOLD_NULL 0xFF
@@ -27,8 +26,8 @@ typedef struct {
     // Non-negative Values represents animation frames that are 
     // facing rightwards. Negative values present animation frames 
     // facing leftwards.
-    signed char animFrame, health;
-} sSprite;
+    signed char frame, health;
+} sActor;
 
 // Mobs can collide with tiles bearing positive identifiers. 
 // Non-positive identifiers represent tiles that mobs can pass 
@@ -55,8 +54,8 @@ typedef struct {
 
 typedef struct {
     union {
-        sSprite player;
-        sSprite actor[SPRITES];
+        sActor player;
+        sActor actor[SPRITES];
     } actorData;
     sMoldDirectory md;
     sLevel level;

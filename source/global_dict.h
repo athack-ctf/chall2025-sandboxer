@@ -5,6 +5,7 @@
 #define WINDOW_MENU_NAME WINDOW_TITLE_NAME
 
 #define DIR_MOLDINFO "user\\Mukki\\moldInfo.txt"
+#define DIR_ATLAS "user\\Mukki\\atlas.cfg"
 #define DIR_GFX_GUY_NOTHING "enemy\\man.cfg"
 
 #define _HEADER_GLOBALDICT

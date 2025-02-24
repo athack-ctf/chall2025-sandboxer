@@ -10,7 +10,7 @@
 
 // Initialise everything but the mold data of the context of the game.
 void startContext(sContext *c) {
-    sSprite player;
+    sActor player;
     unsigned long i;
     TILE *levelData;
     
@@ -34,7 +34,7 @@ void startContext(sContext *c) {
     player.vel.subX = 0;
     
     // The player begins by facing right.
-    player.animFrame = 0;
+    player.frame = 0;
     
     // XXX: Increase player health.
     player.health = 1;
@@ -72,7 +72,7 @@ typedef struct {
     char hittingCeil, hittingFloor, hittingLeft, hittingRight;
 } sCollision;
 
-static sSprite updatePlayer(sContext const *c);
+static sActor updatePlayer(sContext const *c);
 #define MAX_VALUE_OF_SIGNED(A) ~~( (1 << (CHAR_BIT*sizeof(A)-1)) - 1 )
 #define ABS(A) ~~((A)>0?(A):-(A))
 
@@ -97,8 +97,8 @@ void updateContext(sContext *c) {
 #define PLAYER_JUMP_VEL 7
 
 #define POS_TO_TILE_INDEX(X, Y, H) ~~((H)*((X)/TILE_PELS) + (Y)/TILE_PELS)
-static sSprite updatePlayer(sContext const *c) {
-    sSprite p = c->scene.actorData.player;
+static sActor updatePlayer(sContext const *c) {
+    sActor p = c->scene.actorData.player;
     sMold const mold = c->scene.md.data[p.moldId];
     sLevel const level = c->scene.level;
     sCoord const prev = p.pos;
@@ -134,7 +134,7 @@ static sSprite updatePlayer(sContext const *c) {
         
     }
     // XXX: Reuse logic above to keep the player within the bounds of 
-    // the level?
+    // the level? (right-most side and highest position)
     
     if (c->input.run.holdDur) {
         maxSpeed = (signed short) (mold.maxSpeed<<8);
@@ -185,24 +185,31 @@ static sSprite updatePlayer(sContext const *c) {
         
         if (p.vel.subX != 0) {
             
+            // Switch the animation frame's direction if the 
+            // velocity and the sprite's orientation are opposite.
+            if ((p.vel.subX>0) ^ (p.frame>=0)) {
+                p.frame = (signed char)~p.frame;
+             
+            }
+            
             // Sliding cancels out all friction.
-            if (c->input.slide.holdDur == 1
-                    || ( c->input.slide.holdDur < PLAYER_SLIDE_HOLD_FRAMES
-                    && c->input.slide.holdDur > 0
-                    && ((c->input.left.holdDur
-                    &&p.vel.subX>>8==-mold.maxSpeed)
-                    ||(c->input.right.holdDur
-                    &&p.vel.subX>>8==mold.maxSpeed)) )) {
-                maxSpeed = (signed short) (mold.maxSpeed<<8);
+            if (c->input.slide.holdDur > 0 
+                    && c->input.slide.holdDur < PLAYER_SLIDE_HOLD_FRAMES) {
+                signed short const slidingSpeed = (signed short)
+                    (mold.maxSpeed << 8);
                 
-                if (c->input.right.holdDur) {
-                    p.vel.subX = (signed short) maxSpeed;
+                if (c->input.left.holdDur && (p.vel.subX == -slidingSpeed
+                        || c->input.slide.holdDur == 1)) {
+                    p.vel.subX = (signed short) -slidingSpeed;
+                    maxSpeed =  slidingSpeed;
                     
-                } else {
-                    p.vel.subX = (signed short) -maxSpeed;
-                
+                } else if (c->input.right.holdDur 
+                        && (p.vel.subX == slidingSpeed
+                        || c->input.slide.holdDur == 1)) {
+                    p.vel.subX = slidingSpeed;
+                    maxSpeed =  slidingSpeed;
+                    
                 }
-                
             } else {
                 int const goingRight = p.vel.subX > 0;
                 
@@ -215,14 +222,6 @@ static sSprite updatePlayer(sContext const *c) {
                     p.vel.subX = 0;
                     
                 }
-                
-                // Switch the animation frame's direction if the 
-                // velocity and the sprite's orientation are opposite.
-                // XXX: Add logic for mirroring sprites.
-                // if (goingRight ^ (p.animFrame>=0)) {
-                    // p.animFrame = (signed char)~p.animFrame;
-                    
-                // }
                 
             }
         }

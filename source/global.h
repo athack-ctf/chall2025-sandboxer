@@ -30,15 +30,32 @@ typedef enum {
     MIRAGE_WINDOW_GET_ATTRIBUTE_FAIL,
     MIRAGE_NO_MOLDINFO,
     MIRAGE_NO_GFX_SPRITE,
-    MIRAGE_LOAD_GFX_FAIL
+    MIRAGE_LOAD_GFX_FAIL,
+    MIRAGE_LOAD_MASK_FAIL,
+    MIRAGE_DELETE_DEFAULT_BITMAP_FAIL,
+    MIRAGE_DELETE_DEFAULT_FONT_FAIL,
+    MIRAGE_HEAP_ALLOC_FAIL,
+    MIRAGE_NO_ATLAS,
+    MIRAGE_LOAD_ATLAS_FAIL
 } MirageError;
+
+typedef struct {
+    
+    // Every sprite stores two bitmaps to define its graphical effect. 
+    // One bitmap stores the colors of the sprite. The other bitmap 
+    // stores a monochrome mask that defines which pixels are 
+    // transparent.
+    void *color, *mask;
+} sSprite;
 
 typedef struct {
     
     // The process will load each all animation frames of a sprite 
     // continuously in memory. Each mold has its own set of animation 
-    // frames. The mold stores this graphic data as a bitmap.
-    void *hb;
+    // frames. The mold stores this graphic data as a pair of bitmaps. 
+    // One bitmap contains the color information of the bitmap. The 
+    // other dictates which pixels are transparent and which are not.
+    sSprite s;
     
     // Each mold encompasses all characteristics that a class of 
     // sprites have in common. All instances of the class must have 
@@ -64,6 +81,9 @@ typedef struct {
     // count.
     sMold data[MOLDS];
 } sMoldDirectory;
+
+// XXX: Make unsigned?
+#define TILE_PELS 16
 
 #define _HEADER_GLOBAL
 #endif

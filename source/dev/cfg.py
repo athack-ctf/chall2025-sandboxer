@@ -39,9 +39,10 @@ def encode(itr, file):
             
             entry = paletteIndex << 5
             if tailLength == 0 and headLength < 16:
-                entry |= 0x10 | headLength
+                entry |= headLength
                 datumSize = 1
             else:
+                entry |= 0x10
                 entry <<= 8
                 entry |= headLength << 6
                 entry |= tailLength

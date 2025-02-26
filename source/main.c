@@ -464,9 +464,9 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             // pointer. This member stores the address of an 
             // `sMoldDirectory` structure instance.
             md = (sMoldDirectory*) ((CREATESTRUCT*)lParam)->lpCreateParams;
-            if (initMoldData(md, backbuffer.memoryDc, &bi)) {
-                // The `initMoldData` function call is responsible for 
-                // posting the quit message.
+            if (initMoldDirectory(md, backbuffer.memoryDc, &bi)) {
+                // The `initMoldDirectory` function call is 
+                // responsible for posting the quit message.
                 break;
                 
             }

@@ -31,14 +31,19 @@ typedef enum {
     MIRAGE_NO_MOLDINFO,
     MIRAGE_NO_GFX_SPRITE,
     MIRAGE_LOAD_GFX_FAIL,
+    MIRAGE_LOAD_SPRITE_FAIL,
     MIRAGE_LOAD_MASK_RIGHT_FAIL,
     MIRAGE_LOAD_MASK_LEFT_FAIL,
     MIRAGE_DELETE_DEFAULT_BITMAP_FAIL,
     MIRAGE_DELETE_DEFAULT_FONT_FAIL,
     MIRAGE_HEAP_ALLOC_FAIL,
+    MIRAGE_HEAP_FREE_FAIL,
     MIRAGE_NO_ATLAS,
     MIRAGE_LOAD_ATLAS_FAIL,
-    MIRAGE_BACKBUFFER_WRITE_TILE_FAIL
+    MIRAGE_BACKBUFFER_WRITE_TILE_FAIL,
+    MIRAGE_INTERRUPT_MOLDINFO,
+    MIRAGE_INVALID_MOLDINFO,
+    MIRAGE_INVALID_MOLDENTRY
 } MirageError;
 
 typedef struct {
@@ -64,7 +69,7 @@ typedef struct {
     // the same width and height in pixels. These instances also share 
     // the same maximum horizontal speed and horizontal 
     // sub-acceleration.
-    unsigned char w, h, maxSpeed;
+    unsigned char w, h, maxSpeed, frames;
     
     // The mob's sub-acceleration must be a signed quantity. All the 
     // sub-velocities of each mob are signed quantities. The dynamics 
@@ -75,7 +80,7 @@ typedef struct {
 
 // XXX: Add molds for other tekis, like enemies and weapons in their 
 // dropped forms.
-#define MOLDS 1
+#define MOLDS 5
 typedef struct {
     
     // Every mold has a unique identifying integer for it. Any such 

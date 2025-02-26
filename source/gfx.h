@@ -14,7 +14,7 @@ HBITMAP initAtlas(HDC sourceDc, BITMAPINFO *bi);
 HBITMAP allocGfx(HDC sourceDc, BITMAPINFO *bi, unsigned int w, 
     unsigned int h);
 
-int initMoldData(sMoldDirectory *dstMold, HDC sourceDc, BITMAPINFO *bi);
+int initMoldDirectory(sMoldDirectory *dstMold, HDC sourceDc, BITMAPINFO *bi);
 
 #define _HEADER_GFX
 #endif

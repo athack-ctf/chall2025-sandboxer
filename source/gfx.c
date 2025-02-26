@@ -9,8 +9,6 @@
 #include "global.h"
 #include "gfx.h"
 
-static int decodeGfx(sPixel *dst, HANDLE hf, unsigned long stridePixels);
-
 HBITMAP allocGfx(HDC sourceDc, BITMAPINFO *bi, unsigned int w, 
         unsigned int h) {
     
@@ -44,37 +42,26 @@ HBITMAP allocGfx(HDC sourceDc, BITMAPINFO *bi, unsigned int w,
 #include <memoryapi.h>
 #include "global_dict.h"
 
-// XXX: Finish implementing. Should initialise all molds in the 
-// struct from a file.
-int initMoldData(sMoldDirectory *dstMold, HDC dstMemDc, 
+static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer, 
+    HANDLE hMoldInfoFile, HDC dstMemDc, BITMAPINFO *bi);
+static int loadSprite(sMold *dstMold, sPixel *pelBuffer, 
+    char const (*name)[8], HDC dstMemDc, BITMAPINFO *bi);
+static int decodeGfx(sPixel *dst, HANDLE hf, unsigned long stridePixels);
+
+int initMoldDirectory(sMoldDirectory *dstMold, HDC dstMemDc, 
         BITMAPINFO *bi) {
+    HANDLE hMoldInfoFile;
+    sPixel *buffer;
+    int error;
     
-    // XXX: Clean up this variable mess.
-    HANDLE hFile;
-    sPixel *pelBuffer;
-    char buffer[64];
-    struct {
-        unsigned long io, pelData;
-    } bytes;
-    signed long tempWidth, tempHeight;
-    unsigned long pixels;
-    sSprite s;
-    BITMAPINFOHEADER *bih;
-    
-    hFile = CreateFile(DIR_MOLDINFO, 
+    hMoldInfoFile = CreateFile(DIR_MOLDINFO, 
         GENERIC_READ,
         FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
         NULL,
         OPEN_ALWAYS,
         FILE_ATTRIBUTE_NORMAL,
         NULL);
-    
-    // XXX: Fix to read proper amount of bytes. There is an 
-    // indeterminate amount of molds to read.
-    if (hFile == INVALID_HANDLE_VALUE
-            || !ReadFile(hFile, buffer, ARRAY_ELEMENTS(buffer), &bytes.io, 
-            NULL)) {
-        CloseHandle(hFile);
+    if (hMoldInfoFile == INVALID_HANDLE_VALUE) {
         PANIC("The process could not find actor mold data. "
             "Expected a file in \""DIR_MOLDINFO"\".", 
             MIRAGE_NO_MOLDINFO);
@@ -82,153 +69,501 @@ int initMoldData(sMoldDirectory *dstMold, HDC dstMemDc,
         
     }
     
-    // The process should not worry about whether a file closed 
-    // properly or not.
-    CloseHandle(hFile);
+    buffer = NULL;
+    error = loadMoldDirectory(dstMold, &buffer, hMoldInfoFile, dstMemDc, bi);
     
-    // XXX: Repeat file read for every sprite.
-    hFile = CreateFile(DIR_GFX_GUY_NOTHING, 
+    // The `loadMoldDirectory` function call cannot close the file 
+    // containing mold information.
+    CloseHandle(hMoldInfoFile);
+    
+    // The call to the `loadMoldDirectory` function is not responsible 
+    // for deallocating buffer graphic data.
+    if (!VirtualFree(buffer, 0, MEM_RELEASE)) {
+        PANIC("The process failed to free buffer memory for graphic data.",
+            MIRAGE_HEAP_FREE_FAIL);
+        return 1;
+        
+    }
+    
+    if (error) {
+        
+        // The call to the `loadMoldDirectory` function is responsible 
+        // for posting the quit message.
+        return 1;
+        
+    }
+    
+    return 0;
+}
+
+#define CHUNK_PIXELS 64U
+
+static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer, 
+        HANDLE hMoldInfoFile, HDC dstMemDc, BITMAPINFO *bi) {
+    struct {
+        unsigned long io, maxPel;
+    } bytes;
+    char buffer[64];
+    struct {
+        char name[8];
+        unsigned char braces, moldIndex, characters;
+        char foundDatum;
+        unsigned short number;
+        enum {
+            MOLDINFO_MOLDS,
+            MOLDINFO_ENTRY,
+            MOLDINFO_NAME,
+            MOLDINFO_WIDTH,
+            MOLDINFO_HEIGHT,
+            MOLDINFO_SPEED,
+            MOLDINFO_ACCEL,
+            MOLDINFO_FRAMES,
+            MOLDINFO_DATUM
+        } search;
+    } state = { { 0 }, 0, 0, 0, 0, 0, MOLDINFO_MOLDS };
+    
+    bytes.maxPel = 0;
+    do {
+        unsigned int byteIndex;
+        
+        if (!ReadFile(hMoldInfoFile, buffer, ARRAY_ELEMENTS(buffer), 
+                &bytes.io, NULL)) {
+            PANIC("The process unexpectedly cannot read \""DIR_MOLDINFO"\".", 
+                MIRAGE_INTERRUPT_MOLDINFO);
+            
+            // The caller function is responsible for closing the mold 
+            // information file.
+            break;
+            
+        }
+        
+        for (byteIndex = 0; byteIndex < bytes.io; ++byteIndex) {
+            char const byte = buffer[byteIndex];
+            
+            switch (byte) {
+                case '{': {
+                    if (state.braces >= 2U) {
+                        break;
+                
+                case '}':
+                        // Assume that the scope level is non-zero.
+                        
+                        if (state.braces-- == 0) {
+                            if (state.moldIndex-- == 0) {
+                                
+                                // The process ignores any data 
+                                // following the last mold entry.
+                                return 0;
+                                
+                            }
+                            
+                            // Wipe out all mold information before 
+                            // beginning to process the next mold 
+                            // entry.
+                            memset(&state, 0x00, sizeof state);
+                            state.search = MOLDINFO_ENTRY;
+                            
+                        } else {
+                            static unsigned char const datum[] = {
+                                MOLDINFO_WIDTH,
+                                MOLDINFO_HEIGHT,
+                                MOLDINFO_FRAMES,
+                                MOLDINFO_NAME,
+                                MOLDINFO_SPEED,
+                                MOLDINFO_ACCEL
+                            };
+                            
+                            if (state.number < ARRAY_ELEMENTS(datum)) {
+                                state.search = datum[state.number];
+                                
+                            }
+                            
+                            state.number = 0U;
+                            state.foundDatum = 0;
+                            continue;
+                            
+                        }
+                        
+                    } else {
+                        state.search = MOLDINFO_DATUM;
+                        ++state.braces;
+                        
+                    }
+                }
+                // Fall-through
+                case '\n':
+                case '\t':
+                case '\r':
+                case ' ': {
+                    if (!state.foundDatum) {
+                        continue;
+                        
+                    } else {
+                        switch (state.search) {
+                            case MOLDINFO_MOLDS: {
+                                if (state.number == 0) {
+                                    
+                                    // Return because there are no 
+                                    // mold entries to parse.
+                                    return 0;
+                                    
+                                }
+                                
+                                state.moldIndex = (unsigned char) 
+                                    (state.number - 1U);
+                                state.search = MOLDINFO_ENTRY;
+                                break;
+                                
+                            }
+                            
+                            case MOLDINFO_NAME: {
+                                unsigned int const pels = (unsigned int)
+                                    (dstMold->data[state.moldIndex].w
+                                    * dstMold->data[state.moldIndex].h
+                                    * dstMold->data[state.moldIndex].frames);
+                                
+                                // The amount of pixels must be a 
+                                // multiple of the chunk size.
+                                if (pels==0 || pels%CHUNK_PIXELS!=0) {
+                                    PANIC("An invalid mold entry is in "
+                                        "the mold information file.",
+                                        MIRAGE_INVALID_MOLDENTRY);
+                                    return 1;
+                                    
+                                }
+                                
+                                if (pels > bytes.maxPel) {
+                                    sPixel *p = *pelBuffer;
+                                    
+                                    // The process should not bother 
+                                    // checking whether it freed 
+                                    // memory correctly or not.
+                                    if (p != NULL) {
+                                        VirtualFree(p, 0, MEM_RELEASE);
+                                        
+                                    }
+                                    
+                                    bytes.maxPel = (unsigned int)
+                                        (pels * sizeof*p);
+                                    p = VirtualAlloc(NULL, 
+                                        bytes.maxPel, 
+                                        MEM_COMMIT, 
+                                        PAGE_READWRITE);
+                                    if (p == NULL) {
+                                        PANIC("The process failed to reserve "
+                                            "heap memory for buffering pixel "
+                                            "data.", 
+                                            MIRAGE_HEAP_ALLOC_FAIL);
+                                        return 1;
+                                        
+                                    }
+                                    
+                                    // Commit the changes to the 
+                                    // current allocation for storing 
+                                    // sprite pixel data.
+                                    *pelBuffer = p;
+                                    
+                                }
+                                
+                                if (loadSprite(
+                                        &dstMold->data[state.moldIndex], 
+                                        *pelBuffer, &state.name, dstMemDc, 
+                                        bi)) {
+                                    
+                                    // The call to the `loadSprite` 
+                                    // function is responsible for 
+                                    // posting the quit message.
+                                    return 1;
+                                    
+                                }
+                                break;
+                                
+                            }
+                            
+                            case MOLDINFO_WIDTH: {
+                                dstMold->data[state.moldIndex].w = 
+                                    (unsigned char) state.number;
+                                break;
+                                
+                            }
+                            
+                            case MOLDINFO_HEIGHT: {
+                                dstMold->data[state.moldIndex].h = 
+                                    (unsigned char) state.number;
+                                break;
+                                
+                            }
+                            
+                            case MOLDINFO_SPEED: {
+                                dstMold->data[state.moldIndex]
+                                    .maxSpeed = (unsigned char) 
+                                    state.number;
+                                break;
+                                
+                            }
+                            
+                            case MOLDINFO_ACCEL: {
+                                dstMold->data[state.moldIndex]
+                                    .subAccel = (signed char) 
+                                    state.number;
+                                break;
+                                
+                            }
+                            
+                            case MOLDINFO_FRAMES: {
+                                dstMold->data[state.moldIndex].frames = 
+                                    (unsigned char) state.number;
+                                break;
+                                
+                            }
+                            
+                            case MOLDINFO_DATUM:
+                            case MOLDINFO_ENTRY:
+                            default: {
+                                break;
+                                
+                            }
+                        }
+                        
+                    }
+                    state.number = 0U;
+                    state.foundDatum = 0;
+                    continue;
+                    
+                }
+                
+                case '0':
+                case '1':
+                case '2':
+                case '3':
+                case '4':
+                case '5':
+                case '6':
+                case '7':
+                case '8':
+                case '9': {
+                    state.number = (unsigned short)
+                        (state.number*10U);
+                    state.number = (unsigned short)
+                        (state.number + (byte-'0'));
+                    state.foundDatum = 1;
+                    continue;
+                    
+                }
+                
+                case 'a': case 'A':
+                case 'b': case 'B':
+                case 'c': case 'C':
+                case 'd': case 'D':
+                case 'e': case 'E':
+                case 'f': case 'F':
+                case 'g': case 'G':
+                case 'h': case 'H':
+                case 'i': case 'I':
+                case 'j': case 'J':
+                case 'k': case 'K':
+                case 'l': case 'L':
+                case 'm': case 'M':
+                case 'n': case 'N':
+                case 'o': case 'O':
+                case 'p': case 'P':
+                case 'q': case 'Q':
+                case 'r': case 'R':
+                case 's': case 'S':
+                case 't': case 'T':
+                case 'u': case 'U':
+                case 'v': case 'V':
+                case 'w': case 'W':
+                case 'x': case 'X':
+                case 'y': case 'Y':
+                case 'z': case 'Z': {
+                    if (state.search!=MOLDINFO_NAME
+                            || state.characters
+                            >=ARRAY_ELEMENTS(state.name) - 1) {
+                        // Include the null terminal.
+                        
+                        break;
+                        
+                    }
+                    state.name[state.characters++] = byte;
+                    state.foundDatum = 1;
+                    continue;
+                    
+                }
+                
+                default:
+            }
+            
+            PANIC("The mold information file \""DIR_MOLDINFO
+                "\" is invalid.", MIRAGE_INVALID_MOLDINFO);
+            return 1;
+            
+        }
+    } while (bytes.io == sizeof buffer);
+    
+    if (state.moldIndex != 0) {
+        PANIC("Mismatch between amount of molds and entries in "
+            "\""DIR_MOLDINFO"\".", MIRAGE_INVALID_MOLDINFO);
+        return 1;
+        
+    }
+    
+    return 0;
+}
+
+static int loadSprite(sMold *dstMold, sPixel *pelBuffer, 
+        char const (*name)[8], HDC dstMemDc, BITMAPINFO *bi) {
+    HANDLE hGraphicFile;
+    BITMAPINFOHEADER *bih = &bi->bmiHeader;
+    signed long const tempW = bih->biWidth, tempH = bih->biHeight;
+    char const *src;
+    char *write;
+    int error;
+    unsigned int characters;
+    char root[] = DIR_SPRITE, suffix[] = "\0\0\0\0\0\0\0\0\0\0\0\0";
+    char const extension[] = EXTENSION_GFX;
+    char dir[sizeof root + sizeof suffix + sizeof extension];
+    
+    root[ARRAY_ELEMENTS(root) - 1] = '\\';
+    
+    for (write = &suffix[0], src = *name, characters = 0;
+            *src != '\0'; 
+            ++write, ++src, ++characters) {
+        *write = *src;
+    }
+    memcpy(dir, root, sizeof root);
+    memcpy(dir + sizeof root, suffix, characters * sizeof*suffix);
+    memcpy(dir + sizeof root + characters*sizeof*suffix, extension, 
+        sizeof extension);
+    
+    hGraphicFile = CreateFile(dir, 
         GENERIC_READ,
         FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
         NULL,
         OPEN_ALWAYS,
         FILE_ATTRIBUTE_NORMAL,
         NULL);
-    if (hFile == INVALID_HANDLE_VALUE) {
-        CloseHandle(hFile);
+    if (hGraphicFile == INVALID_HANDLE_VALUE) {
         PANIC("The process could not locate sprite data.",
             MIRAGE_NO_GFX_SPRITE);
         return 1;
         
     }
     
-    bih = &bi->bmiHeader;
-    tempWidth = bih->biWidth;
-    tempHeight = bih->biHeight;
-    
-    // XXX: Change dimensions according to the mold information 
-    // instead of hardcoding data.
-    bih->biWidth = 16;
-    bih->biHeight = 224;
-    pixels = (unsigned long)(bih->biWidth * bih->biHeight);
-    
-    // Implement memory reallocation system for sprite graphics.
-    bytes.pelData = (unsigned long)(pixels * (unsigned long)sizeof*pelBuffer);
-    pelBuffer = VirtualAlloc(NULL, bytes.pelData, MEM_COMMIT,
-        PAGE_READWRITE);
-    if (pelBuffer == NULL) {
-        CloseHandle(hFile);
-        PANIC("The process failed to reserve heap memory.",
-            MIRAGE_HEAP_ALLOC_FAIL);
-        return 1;
+    do {
+        unsigned int pixels;
+        sSprite s;
         
-    }
-    
-    if (decodeGfx(pelBuffer, hFile, pixels)) {
-        PANIC("The process failed to load sprite data.",
-            MIRAGE_LOAD_GFX_FAIL);
-        s.color = NULL;
+        bih->biWidth = dstMold->w;
+        bih->biHeight = dstMold->h * dstMold->frames;
         
-    } else {
-        char *p;
-        unsigned long byteIndex, bitIndex;
-        
-        // Interpret as a bottom-up bitmap.
-        bih->biHeight = -bih->biHeight;
-        s.color = CreateDIBitmap(dstMemDc, 
-            bih,
-            CBM_INIT,
-            pelBuffer,
-            bi,
-            DIB_RGB_COLORS);
-        bih->biHeight = -bih->biHeight;
-        
-        p = (char*)pelBuffer;
-        
-        // Assume that eight divides the total amount of pixels in 
-        // the source bitmap. This assumption does not matter here 
-        // since this total is a multiple of sixty-four.
-        // XXX: Pad rows to dwords?
-        for (bitIndex = 0, byteIndex = 0; bitIndex < pixels; ++byteIndex) {
-            signed int shift;
-            char byte = 0x00;
+        pixels = (unsigned int)(bih->biWidth * bih->biHeight);
+        if (decodeGfx(pelBuffer, hGraphicFile, pixels)) {
+            PANIC("The process failed to load sprite data.",
+                MIRAGE_LOAD_GFX_FAIL);
+            error = 1;
+            break;
             
-            for (shift = 7; shift >= 0; --shift, ++bitIndex) {
-                byte |= (char)((pelBuffer[bitIndex].a > 0) << shift);
+        } else {
+            char *p;
+            unsigned long byteIndex, bitIndex;
+            
+            // Interpret as a bottom-up bitmap.
+            bih->biHeight = -bih->biHeight;
+            s.color = CreateDIBitmap(dstMemDc, 
+                bih,
+                CBM_INIT,
+                pelBuffer,
+                bi,
+                DIB_RGB_COLORS);
+            bih->biHeight = -bih->biHeight;
+            if (s.color == NULL) {
+                PANIC("The process failed to create a sprite graphic.",
+                    MIRAGE_LOAD_SPRITE_FAIL);
+                error = 1;
+                break;
                 
             }
-            p[byteIndex] = byte;
-        }
-        
-        s.maskRight = CreateBitmap((signed int)bih->biWidth, 
-            (signed int)bih->biHeight, 1, 1, pelBuffer);
-        if (s.maskRight == NULL) {
-            PANIC("The process failed to load the right sprite mask data.",
-                MIRAGE_LOAD_MASK_RIGHT_FAIL);
-            // The window destruction procedure is responsible for 
-            // deallocating sprite bitmaps.
             
-        }
-        
-        for (byteIndex = 0; byteIndex < pixels/8; ++byteIndex) {
-            signed int shift = 7;
-            unsigned char mirrorByte = 0x00, 
-                sourceByte = (unsigned char)p[byteIndex];
+            p = (char*)pelBuffer;
             
-            while (shift--) {
-                char const bit = sourceByte&1;
+            // Assume that eight divides the total amount of pixels in 
+            // the source bitmap. This assumption does not matter here 
+            // since this total is a multiple of sixty-four.
+            // XXX: Pad rows to dwords?
+            for (bitIndex = 0, byteIndex = 0; bitIndex < pixels; ++byteIndex) {
+                signed int shift;
+                char byte = 0x00;
                 
-                mirrorByte = (unsigned char)(mirrorByte|bit);
-                sourceByte >>= 1;
-                mirrorByte = (unsigned char)(mirrorByte<<1);
+                for (shift = 7; shift >= 0; --shift, ++bitIndex) {
+                    byte |= (char)((pelBuffer[bitIndex].a > 0) << shift);
+                    
+                }
+                p[byteIndex] = byte;
             }
-            mirrorByte = (unsigned char)(mirrorByte|sourceByte);
-            p[byteIndex] = (char)mirrorByte;
-        }
-        
-        // XXX: Fix for sprites of larger widths.
-        for (byteIndex = 0; byteIndex < pixels/8; 
-                byteIndex = byteIndex + (unsigned long)(bih->biWidth/8)) {
-            char const temp = p[byteIndex+1];
-            p[byteIndex+1] = p[byteIndex];
-            p[byteIndex] = temp;
+            
+            s.maskRight = CreateBitmap((signed int)bih->biWidth, 
+                (signed int)bih->biHeight, 1, 1, pelBuffer);
+            if (s.maskRight == NULL) {
+                PANIC("The process failed to load the right sprite mask data.",
+                    MIRAGE_LOAD_MASK_RIGHT_FAIL);
+                
+                // The window destruction procedure is responsible for 
+                // deallocating sprite bitmaps.
+                error = 1;
+                break;
+                
+            }
+            
+            for (byteIndex = 0; byteIndex < pixels/8; ++byteIndex) {
+                signed int shift = 7;
+                unsigned char mirrorByte = 0x00, 
+                    sourceByte = (unsigned char)p[byteIndex];
+                
+                while (shift--) {
+                    char const bit = sourceByte&1;
+                    
+                    mirrorByte = (unsigned char)(mirrorByte|bit);
+                    sourceByte >>= 1;
+                    mirrorByte = (unsigned char)(mirrorByte<<1);
+                }
+                mirrorByte = (unsigned char)(mirrorByte|sourceByte);
+                p[byteIndex] = (char)mirrorByte;
+            }
+            
+            // XXX: Fix for sprites of larger widths.
+            for (byteIndex = 0; byteIndex < pixels/8; 
+                    byteIndex = byteIndex + (unsigned long)(bih->biWidth/8)) {
+                char const temp = p[byteIndex+1];
+                p[byteIndex+1] = p[byteIndex];
+                p[byteIndex] = temp;
+                
+            }
+            
+            s.maskLeft = CreateBitmap((signed int)bih->biWidth, 
+                (signed int)bih->biHeight, 1, 1, pelBuffer);
+            if (s.maskLeft == NULL) {
+                PANIC("The process failed to load the left sprite mask data.",
+                    MIRAGE_LOAD_MASK_LEFT_FAIL);
+                
+                // The window destruction procedure is responsible for 
+                // deallocating sprite bitmaps.
+                error = 1;
+                break;
+                
+            }
+            
+            dstMold->s = s;
+            
+            error = 0;
             
         }
-        
-        s.maskLeft = CreateBitmap((signed int)bih->biWidth, 
-            (signed int)bih->biHeight, 1, 1, pelBuffer);
-        if (s.maskLeft == NULL) {
-            PANIC("The process failed to load the left sprite mask data.",
-                MIRAGE_LOAD_MASK_LEFT_FAIL);
-            // The window destruction procedure is responsible for 
-            // deallocating sprite bitmaps.
-            
-        }
-        
-    }
+    } while (0);
     
-    // The process should not bother checking that the operating 
-    // system deallocated memory without issue.
-    VirtualFree(pelBuffer, bytes.pelData, MEM_RELEASE);
-    
-    // The process should not bother with recovering from an 
-    // unsuccessful handle closure.
-    CloseHandle(hFile);
-    
-    bih->biWidth = tempWidth;
-    bih->biHeight = tempHeight;
-    
-    // XXX: Only initialises the mold that the player will use. 
-    // Add all other molds that sprites will use.
-    // XXX: The directory mold identifier of zero is not necessarily 
-    // the one for the player.
-    // XXX: Actually load the bitmap for the animation frames.
-    dstMold->data[0].s = s;
-    dstMold->data[0].w = 16;
-    dstMold->data[0].h = 17;
-    dstMold->data[0].maxSpeed = 4;
-    dstMold->data[0].subAccel = 60;
-    return 0;
+    bih->biWidth = tempW;
+    bih->biHeight = tempH;
+    CloseHandle(hGraphicFile);
+    return error;
 }
 
 #define TILES_PER_GROUP 4U
@@ -292,16 +627,11 @@ HBITMAP initAtlas(HDC dstMemDc, BITMAPINFO *bi) {
         
     }
     
-    // The process should not bother checking that the operating 
-    // system deallocated memory properly.
-    VirtualFree(pelBuffer, bufferBytes, MEM_RELEASE);
-    
     return hb;
 }
 
 #define RGB24_PIXEL_BYTES 3
 
-#define CHUNK_PIXELS 64
 #define MASK_THERE_IS_TAIL 0x10
 #define MASK_COLOR 0xE0
 #define SHIFT_COLOR 5
@@ -491,8 +821,5 @@ static int decodeGfx(sPixel *dst, HANDLE hf, unsigned long stridePixels) {
         // when to end.
     } while (ioBytes == sizeof buffer);
     
-    // The decoding procedure may end abruptly if a chunk did not 
-    // contain sixty-four pixels. The process may also prematurely end 
-    // if there are mismatching amounts of pixels.
-    return ioBytes == sizeof buffer;
+    return 0;
 }

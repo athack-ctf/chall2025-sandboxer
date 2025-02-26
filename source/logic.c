@@ -261,6 +261,7 @@ static sActor updatePlayer(sContext const *c) {
                     ((unsigned int) ABS(p.vel.subX) >> 8U);
                 unsigned char const changePeriod = (unsigned char)
                     (ANIM_GAIT_TRANSITION_PERIOD - absVelSubX);
+                // High horizontal velocities may cause modulo by zero.
                 
                 p.vel.subX = (signed short)(goingRight ? 
                     p.vel.subX-PLAYER_FRICTION : p.vel.subX+PLAYER_FRICTION);

@@ -46,7 +46,7 @@ HBITMAP allocGfx(HDC sourceDc, BITMAPINFO *bi, unsigned int w,
 
 // XXX: Finish implementing. Should initialise all molds in the 
 // struct from a file.
-int initMoldData(sMoldDirectory *dstMold, HDC sourceDc, 
+int initMoldData(sMoldDirectory *dstMold, HDC dstMemDc, 
         BITMAPINFO *bi) {
     
     // XXX: Clean up this variable mess.
@@ -124,8 +124,6 @@ int initMoldData(sMoldDirectory *dstMold, HDC sourceDc,
         
     }
     
-    puts("Beginning sprite decoding.");
-    
     if (decodeGfx(pelBuffer, hFile, pixels)) {
         PANIC("The process failed to load sprite data.",
             MIRAGE_LOAD_GFX_FAIL);
@@ -137,7 +135,7 @@ int initMoldData(sMoldDirectory *dstMold, HDC sourceDc,
         
         // Interpret as a bottom-up bitmap.
         bih->biHeight = -bih->biHeight;
-        s.color = CreateDIBitmap(sourceDc, 
+        s.color = CreateDIBitmap(dstMemDc, 
             bih,
             CBM_INIT,
             pelBuffer,
@@ -151,9 +149,7 @@ int initMoldData(sMoldDirectory *dstMold, HDC sourceDc,
         // the source bitmap. This assumption does not matter here 
         // since this total is a multiple of sixty-four.
         // XXX: Pad rows to dwords?
-        for (bitIndex = 0, byteIndex = 0; 
-                bitIndex < (unsigned long) (bih->biWidth * bih->biHeight); 
-                ++byteIndex) {
+        for (bitIndex = 0, byteIndex = 0; bitIndex < pixels; ++byteIndex) {
             signed int shift;
             char byte = 0x00;
             
@@ -164,11 +160,46 @@ int initMoldData(sMoldDirectory *dstMold, HDC sourceDc,
             p[byteIndex] = byte;
         }
         
-        s.mask = CreateBitmap((signed int)bih->biWidth, 
+        s.maskRight = CreateBitmap((signed int)bih->biWidth, 
             (signed int)bih->biHeight, 1, 1, pelBuffer);
-        if (s.mask == NULL) {
-            PANIC("The process failed to load sprite mask data.",
-                MIRAGE_LOAD_MASK_FAIL);
+        if (s.maskRight == NULL) {
+            PANIC("The process failed to load the right sprite mask data.",
+                MIRAGE_LOAD_MASK_RIGHT_FAIL);
+            // The window destruction procedure is responsible for 
+            // deallocating sprite bitmaps.
+            
+        }
+        
+        for (byteIndex = 0; byteIndex < pixels/8; ++byteIndex) {
+            signed int shift = 7;
+            unsigned char mirrorByte = 0x00, 
+                sourceByte = (unsigned char)p[byteIndex];
+            
+            while (shift--) {
+                char const bit = sourceByte&1;
+                
+                mirrorByte = (unsigned char)(mirrorByte|bit);
+                sourceByte >>= 1;
+                mirrorByte = (unsigned char)(mirrorByte<<1);
+            }
+            mirrorByte = (unsigned char)(mirrorByte|sourceByte);
+            p[byteIndex] = (char)mirrorByte;
+        }
+        
+        // XXX: Fix for sprites of larger widths.
+        for (byteIndex = 0; byteIndex < pixels/8; 
+                byteIndex = byteIndex + (unsigned long)(bih->biWidth/8)) {
+            char const temp = p[byteIndex+1];
+            p[byteIndex+1] = p[byteIndex];
+            p[byteIndex] = temp;
+            
+        }
+        
+        s.maskLeft = CreateBitmap((signed int)bih->biWidth, 
+            (signed int)bih->biHeight, 1, 1, pelBuffer);
+        if (s.maskLeft == NULL) {
+            PANIC("The process failed to load the left sprite mask data.",
+                MIRAGE_LOAD_MASK_LEFT_FAIL);
             // The window destruction procedure is responsible for 
             // deallocating sprite bitmaps.
             
@@ -204,7 +235,7 @@ int initMoldData(sMoldDirectory *dstMold, HDC sourceDc,
 #define GROUP_PELS ~~(TILE_PELS*TILE_PELS*TILES_PER_GROUP)
 #define ALL_TILE_PELS ~~(TILE_PELS*TILE_PELS*UNIQUE_TILES)
 
-HBITMAP initAtlas(HDC sourceDc, BITMAPINFO *bi) {
+HBITMAP initAtlas(HDC dstMemDc, BITMAPINFO *bi) {
     HBITMAP hb;
     HANDLE hf;
     sPixel *pelBuffer;
@@ -245,7 +276,7 @@ HBITMAP initAtlas(HDC sourceDc, BITMAPINFO *bi) {
             
             // The resulting pixel data describes a bottom-up bitmap.
             bi->bmiHeader.biHeight = -bi->bmiHeader.biHeight;
-            hb = CreateDIBitmap(sourceDc, 
+            hb = CreateDIBitmap(dstMemDc, 
                 &bi->bmiHeader,
                 CBM_INIT,
                 pelBuffer,
@@ -283,7 +314,6 @@ HBITMAP initAtlas(HDC sourceDc, BITMAPINFO *bi) {
 #define DOUBLE_MASK_TAIL_LENGTH 0x3F
 #define DOUBLE_SHIFT_TAIL_LENGTH 0
 
-// XXX: Think of a better name?
 static int decodeGfx(sPixel *dst, HANDLE hf, unsigned long stridePixels) {
     struct {
         sPixel *head, *tail;
@@ -318,10 +348,8 @@ static int decodeGfx(sPixel *dst, HANDLE hf, unsigned long stridePixels) {
     } state;
     
     // The buffer size for storing the contents of the graphic file 
-    // is partly arbitrary.
+    // is arbitrary.
     unsigned char buffer[128];
-    
-    printf("Understood stride of %lu\n", stridePixels);
     
     // A colour index of zero represents a transparent pixel.
     memset(&state.color[0], 0x00, sizeof state.color[0]);
@@ -352,13 +380,11 @@ static int decodeGfx(sPixel *dst, HANDLE hf, unsigned long stridePixels) {
             return 1;
             
         }
-        printf("Read %lu bytes.\n", ioBytes);
         
         for (bufferIndex = 0; bufferIndex < ioBytes; ) {
             unsigned char byte;
             
             if (state.pixelsLeftInChunk == 0) {
-                printf("Begin with a new chunk.\n");
                 state.pixelsLeftInChunk = CHUNK_PIXELS;
                 dst += CHUNK_PIXELS;
                 brush.head = dst;
@@ -370,7 +396,6 @@ static int decodeGfx(sPixel *dst, HANDLE hf, unsigned long stridePixels) {
                 continue;
                 
             } else if (state.pixels.left == 0) {
-                printf("Begin with another header.\n");
                 state.colorIndex = 1;
                 state.colors = 255;
                 state.parsingHeader = PROBING_COLORS;

@@ -1,11 +1,5 @@
 #ifndef _HEADER_LOGIC
 
-#define SPRITES 64
-#define MAX_POS ~~((unsigned short) -1)
-#define GRAVITY 2
-
-#define MOLD_NULL 0xFF
-
 typedef struct {
     unsigned short x, y;
 } sCoord;
@@ -14,9 +8,9 @@ typedef struct {
     sCoord pos;
     struct {
         
-        // The eight most significant bits of any sprite's velocity 
-        // alter's the sprite's position. The lowest eight bits do not 
-        // affect the sprite's position.
+        // The eight most significant bits of any actor's velocity 
+        // alter's the actor's position. The lowest eight bits do not 
+        // affect the actor's position.
         signed short subX;
         signed char y;
     } vel;
@@ -27,11 +21,15 @@ typedef struct {
     // facing rightwards. Negative values present animation frames 
     // facing leftwards.
     signed char frame, health;
+    
+    // Every actor bears its own timer which ticks down every frame.
+    // Logic dictating how sprites animate rely on this timer.
+    unsigned char timer;
 } sActor;
 
-// Mobs can collide with tiles bearing positive identifiers. 
-// Non-positive identifiers represent tiles that mobs can pass 
-// through.
+// Mobs can collide with tiles that have identifiers that are 
+// multiples of four.
+#define SOLID_TILE_PERIOD 4
 typedef signed char TILE;
 typedef struct {
     
@@ -52,6 +50,9 @@ typedef struct {
     sCoord spawn;
 } sLevel;
 
+#define SPRITES 64
+#define GRAVITY 2
+#define MOLD_NULL 0xFF
 typedef struct {
     union {
         sActor player;

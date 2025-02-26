@@ -31,12 +31,14 @@ typedef enum {
     MIRAGE_NO_MOLDINFO,
     MIRAGE_NO_GFX_SPRITE,
     MIRAGE_LOAD_GFX_FAIL,
-    MIRAGE_LOAD_MASK_FAIL,
+    MIRAGE_LOAD_MASK_RIGHT_FAIL,
+    MIRAGE_LOAD_MASK_LEFT_FAIL,
     MIRAGE_DELETE_DEFAULT_BITMAP_FAIL,
     MIRAGE_DELETE_DEFAULT_FONT_FAIL,
     MIRAGE_HEAP_ALLOC_FAIL,
     MIRAGE_NO_ATLAS,
-    MIRAGE_LOAD_ATLAS_FAIL
+    MIRAGE_LOAD_ATLAS_FAIL,
+    MIRAGE_BACKBUFFER_WRITE_TILE_FAIL
 } MirageError;
 
 typedef struct {
@@ -45,7 +47,7 @@ typedef struct {
     // One bitmap stores the colors of the sprite. The other bitmap 
     // stores a monochrome mask that defines which pixels are 
     // transparent.
-    void *color, *mask;
+    void *color, *maskRight, *maskLeft;
 } sSprite;
 
 typedef struct {

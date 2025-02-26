@@ -472,7 +472,9 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             }
             
             atlas.memoryDc = CreateCompatibleDC(backbuffer.memoryDc);
-            atlas.hb = initAtlas(atlas.memoryDc, &bi);
+            
+            // The tile atlas must have the same bit depth as the backbuffer.
+            atlas.hb = initAtlas(backbuffer.memoryDc, &bi);
             if (atlas.hb == NULL) {
                 // The `initAtlas` function is responsible for posting 
                 // the quit message.
@@ -677,7 +679,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             RECT wRect;
             HDC spriteMemDc;
             sScene const *s;
-            size_t i;
+            unsigned int i, pelsOutsideViewportLeft;
             unsigned char prevMoldId;
             
             hdc = BeginPaint(hwnd, ps);
@@ -697,18 +699,58 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                 
             }
             
-            // The window initialisation procedure left the 
-            // backbuffer's bitmap as selected in the device context.
-            if (!BitBlt(backbuffer.memoryDc, 0, 0, VIEWPORT_WIDTH, 
-                    VIEWPORT_HEIGHT, backbuffer.memoryDc, 0, 0, BLACKNESS)) {
-                PANIC("The process failed to set the entire backbuffer to "
-                    "black.", MIRAGE_BACKBUFFER_BLACK_OUT_FAIL);
-                break;
+            pelsOutsideViewportLeft = (unsigned int)
+                ((s->actorData.player.pos.x
+                + s->md.data[s->actorData.player.moldId].w/2));
+            if (pelsOutsideViewportLeft < VIEWPORT_WIDTH/2) {
+                pelsOutsideViewportLeft = 0;
+                
+            } else {
+                // XXX: Consider case of being at the right-most 
+                // boundary of the level.
+                
+                pelsOutsideViewportLeft = (unsigned int)
+                    (pelsOutsideViewportLeft - VIEWPORT_WIDTH/2);
                 
             }
             
-            // Display all tiles in the viewport.
-            
+            // Display all tiles visible in the viewport. This 
+            // rendering process also includes the right-most column 
+            // of tiles. The process offsets the screen positions of 
+            // the tiles according to the player's position. This 
+            // translation can only go backwards. As such, the 
+            // rendering process must consider the right-most column 
+            // of tiles.
+            for (i = 0; 
+                    i <= VIEWPORT_WIDTH/TILE_PELS; 
+                    ++i) {
+                unsigned int j;
+                
+                for (j = 0; j < VIEWPORT_HEIGHT/TILE_PELS; ++j) {
+                    TILE const t = s->level.data[j 
+                        + (pelsOutsideViewportLeft/TILE_PELS+i)*s->level.h];
+                    sCoord const tScreen = {
+                        (unsigned short)(TILE_PELS*i),
+                        (unsigned short)(VIEWPORT_HEIGHT - TILE_PELS*j 
+                            - TILE_PELS)
+                    };
+                    unsigned int const shift = pelsOutsideViewportLeft 
+                        % TILE_PELS;
+                    if (!BitBlt(backbuffer.memoryDc, 
+                            tScreen.x - (signed int)shift, 
+                            tScreen.y, 
+                            TILE_PELS, TILE_PELS, atlas.memoryDc,
+                            0, t*TILE_PELS, SRCCOPY)) {
+                        PANIC("The process failed to render a tile.",
+                            MIRAGE_BACKBUFFER_WRITE_TILE_FAIL);
+                        i = (unsigned int) -1;
+                        break;
+                        
+                    }
+                    
+                }
+                
+            }
             
             // Display all sprites that can appear in the viewport.
             spriteMemDc = CreateCompatibleDC(backbuffer.memoryDc);
@@ -719,8 +761,17 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                 // directory identifies a null actor.
                 if (actor.moldId != MOLD_NULL) {
                     sMold const mold = s->md.data[actor.moldId];
+                    HBITMAP mask;
                     POINT para[3];
                     unsigned char frameIndex;
+                    
+                    if ((unsigned int)(actor.pos.x+mold.w-1) 
+                            < pelsOutsideViewportLeft
+                            || actor.pos.x 
+                            >= pelsOutsideViewportLeft+VIEWPORT_WIDTH) {
+                        continue;
+                        
+                    }
                     
                     if (actor.moldId != prevMoldId) {
                         // Ignore the return value as what the device 
@@ -754,6 +805,8 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                         para[2].y = VIEWPORT_HEIGHT - actor.pos.y;
                         
                         frameIndex = (unsigned char)actor.frame;
+                        mask = mold.s.maskRight;
+                        
                     } else {
                         para[0].x = actor.pos.x + mold.w;
                         para[0].y = VIEWPORT_HEIGHT - actor.pos.y - mold.h;
@@ -763,16 +816,26 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                         para[2].y = VIEWPORT_HEIGHT - actor.pos.y;
                         
                         frameIndex = (unsigned char)~actor.frame;
+                        mask = mold.s.maskLeft;
+                        
                     }
                     
-                    // XXX: Not reflecting correctly, seems to cut off 
-                    // the sprite's back.
+                    // Make the sprite's point of reference the left 
+                    // side of the screen.
+                    para[0].x = (para[0].x 
+                        - (signed long int) pelsOutsideViewportLeft);
+                    para[1].x = (para[1].x 
+                        - (signed long int) pelsOutsideViewportLeft);
+                    para[2].x = (para[2].x 
+                        - (signed long int) pelsOutsideViewportLeft);
+                    
+                    
                     if (!PlgBlt(backbuffer.memoryDc, 
                             para,
                             spriteMemDc,
                             0, frameIndex*mold.h,
                             mold.w, mold.h,
-                            mold.s.mask,
+                            mask,
                             0, frameIndex*mold.h)) {
                         PANIC("The process failed to draw a sprite.",
                             MIRAGE_BACKBUFFER_WRITE_SPRITE_FAIL);
@@ -804,13 +867,11 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                 // additional overhead. Including this overhead on 
                 // every frame effectively removes this risk. There is 
                 // no benchmarking data to support this claim, however.
-                
-                // Assume that the `fps` member is the first member 
-                // that appears in the structure.
                 for (i = 0; i != METRICS; ++i) {
                     unsigned short n = metricData[i], j = 7 - 2;
                     char buffer[8] = "        ";
                     
+                    // XXX: Sometimes writes outside buffer. Please fix
                     memcpy(&buffer[0] + 6, &metric.label[i].suffix, 
                         sizeof metric.label[i].suffix);
                     

@@ -1,6 +1,3 @@
-#include <limits.h>
-
-// XXX: Remove stdio once debugging is over.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,28 +5,27 @@
 #include "global.h"
 #include "logic.h"
 
-// Initialise everything but the mold data of the context of the game.
-void startContext(sContext *c) {
+static int loadLevel(sLevel *dst);
+static int initActorData(sCast *c);
+
+int initContext(sContext *c) {
     sActor player;
-    unsigned long i;
-    TILE *levelData;
     
     // Set all bytes in the mold data to the representation of the 
     // null mold. This initialisation applies to all sprites except 
     // for the player. This setup causes only the player to appear and 
     // no other sprite. The other sprites are null sprites at this 
     // initial point.
-    memset(&c->scene.actorData.player + 1, MOLD_NULL, 
-        sizeof c->scene.actorData - sizeof c->scene.actorData.player);
+    memset(&c->scene.cast.actorData.player + 1, MOLD_NULL, 
+        sizeof c->scene.cast.actorData 
+        - sizeof c->scene.cast.actorData.player);
     
-    // XXX: Add mold data for player
-    // XXX: Match spawn coordinates for the player with the ones in 
-    // the actual level. Loading the level would provide this 
-    // information.
-    player.pos.x = 0;
-    player.pos.y = 32;
-    player.moldId = 0; // XXX: Assume that the player uses a mold id 
-                       // of zero.
+    if (loadLevel(&c->scene.level) || initActorData(&c->scene.cast)) {
+        return 1;
+        
+    }
+    
+    player.moldId = 0;
     player.vel.y = 0;
     player.vel.subX = 0;
     
@@ -40,48 +36,299 @@ void startContext(sContext *c) {
     // XXX: Increase player health.
     player.health = 1;
     
-    c->scene.actorData.player = player;
+    player.pos = c->scene.level.spawn;
     
-    // XXX: Actually load a level instead of hard-coding values.
-    c->scene.level.w = 200;
-    c->scene.level.h = 32;
-    c->scene.level.spawn = player.pos;
-    c->scene.level.data = levelData = malloc(sizeof*c->scene.level.data 
-        * c->scene.level.w * c->scene.level.h);
-    memset(levelData, 0x07, sizeof*c->scene.level.data 
-        * c->scene.level.w * c->scene.level.h);
-    if (c->scene.level.data == NULL) {
-        
-        // XXX: Add return error code.
-        return;
-        
-    }
-    // XXX: Load the first level from files
-    // XXX: Consider loading in the graphics of every tile?
-    for (i = 0; i < c->scene.level.w; ++i) {
-        levelData[i * c->scene.level.h] = 0;
-    }
-    levelData[2*c->scene.level.h] = 1;
-    levelData[1 + 4*c->scene.level.h] = 0;
-    levelData[2 + 4*c->scene.level.h] = 0;
-    levelData[3 + 4*c->scene.level.h] = 0;
-    levelData[4 + 4*c->scene.level.h] = 0;
-    levelData[5 + 4*c->scene.level.h] = 0;
-    levelData[6 + 4*c->scene.level.h] = 0;
-    levelData[7 + 4*c->scene.level.h] = 0;
-    levelData[7 + 5*c->scene.level.h] = 0;
-    levelData[7 + 6*c->scene.level.h] = 0;
+    c->scene.cast.actorData.player = player;
     
     // Zero out all player input states. This configuration prevents 
     // guarantees that the game does not recognize any initial inputs.
     memset(&c->input, 0x00, sizeof c->input);
     
-    return;
+    return 0;
 }
 
-typedef struct {
-    char hittingCeil, hittingFloor, hittingLeft, hittingRight;
-} sCollision;
+// Store a non-constant version of the pointer to the tilemap to free 
+// it eventually.
+static TILE *tileData;
+
+int freeLevelData(void) {
+    if (tileData != NULL) {
+        free(tileData);
+        return 0;
+        
+    }
+    return 1;
+}
+
+#include <limits.h>
+
+#include "global_dict.h"
+
+#define LEVEL_HEADER_BYTES 6U
+#define LEVEL_HEADER_COORD_BITS 12U
+#define LEVEL_HEADER_COORDS 4U
+static int loadLevel(sLevel *dst) {
+    FILE *f;
+    char buffer[64], code;
+    
+    f = fopen(DIR_LEVEL_TILEMAP, "rb");
+    if (f == NULL) {
+        return 1;
+        
+    }
+    
+    do {
+        unsigned short *coordAsTiles[LEVEL_HEADER_COORDS];
+        unsigned long i, tiles, tileIndex;
+        unsigned int bitsLeft, coordIndex, ioBytes;
+        unsigned short value;
+        
+        if ((ioBytes = (unsigned int)
+                fread(buffer, sizeof*buffer, LEVEL_HEADER_BYTES, f))
+                != LEVEL_HEADER_BYTES) {
+            code = 1;
+            break;
+            
+        }
+        
+        // Set up the memory addresses of the level attributes.
+        coordAsTiles[0] = &dst->w;
+        coordAsTiles[1] = &dst->h;
+        coordAsTiles[2] = &dst->spawn.x;
+        coordAsTiles[3] = &dst->spawn.y;
+        for (i = 0, bitsLeft = LEVEL_HEADER_COORD_BITS, coordIndex = 0, 
+                value = 0;
+                coordIndex < ARRAY_ELEMENTS(coordAsTiles); 
+                ++i) {
+            unsigned char const byte = (unsigned char)buffer[i];
+            
+            // Assume that the sequence of bits of a value can straddle 
+            // over two bytes.
+            if (bitsLeft >= CHAR_BIT) {
+                bitsLeft -= CHAR_BIT;
+                value = (unsigned short)(value + buffer[i]);
+                value = (unsigned short) (value << bitsLeft);
+                
+            } else {
+                unsigned int const shift = (unsigned int)(CHAR_BIT-bitsLeft),
+                    remainder = (unsigned int) (byte >> shift);
+                value = (unsigned short)(value + remainder);
+                *coordAsTiles[coordIndex++] = value;
+                value = (unsigned short) (byte - (remainder<<shift));
+                bitsLeft = LEVEL_HEADER_COORD_BITS - shift;
+                
+            }
+        }
+        
+        // Scale the player spawn coordinates according to the size 
+        // of tiles.
+        dst->spawn.x = (unsigned short)(dst->spawn.x * TILE_PELS);
+        dst->spawn.y = (unsigned short)(dst->spawn.y * TILE_PELS);
+        
+        tiles = (unsigned long)dst->w * (unsigned long)dst->h;
+        tileData = malloc((size_t)tiles * sizeof*tileData);
+        if (tileData == NULL) {
+            code = 1;
+            break;
+            
+        }
+        
+        tileIndex = 0;
+        do {
+            while (i < ioBytes) {
+                char const byte = buffer[i++];
+                tileData[tileIndex++] = (TILE) ((byte&0xF0) >> 4);
+                tileData[tileIndex++] = (TILE) (byte&0x0F);
+                
+            }
+            i = 0;
+            
+            ioBytes = (unsigned int)fread(buffer, sizeof*buffer, 
+                ARRAY_ELEMENTS(buffer), f);
+        } while (ioBytes != 0);
+        
+        dst->data = tileData;
+        code = 0;
+    } while (0);
+    
+    fclose(f);
+    
+    return code;
+}
+
+static int initActorData(sCast *c) {
+    FILE *f;
+    char buffer[64];
+    unsigned int ioBytes, actorIndex;
+    struct {
+        char keyword[4], foundNumber, keywordEnd;
+        unsigned short number;
+        enum {
+            SEARCH_ENTRY,
+            SEARCH_ENEMY,
+            SEARCH_COORD_X,
+            SEARCH_COORD_Y
+        } search;
+    } state;
+    
+    f = fopen(DIR_LEVEL_GEN, "rb");
+    if (f == NULL) {
+        return 1;
+        
+    }
+    
+    memset(&state.keyword, 0x00, sizeof state.keyword);
+    state.search = SEARCH_ENTRY;
+    state.keywordEnd = 1;
+    state.foundNumber = 0;
+    actorIndex = 0;
+    while ((ioBytes = (unsigned int)
+            fread(buffer, sizeof*buffer, sizeof buffer, f)) != 0) {
+        unsigned int byteIndex;
+        
+        for (byteIndex = 0; byteIndex < ioBytes; ) {
+            char const byte = buffer[byteIndex++];
+            struct {
+                char const enemy[4];
+                char const coord[2];
+            } vocab = {
+                "teki",
+                "xy"
+            };
+            
+            switch (byte) {
+                case ';': {
+                    if (++actorIndex >= ARRAY_ELEMENTS(c->actorData.actor)) {
+                        break;
+                        
+                    }
+                    
+                }
+                // Fall-through
+                case '\n':
+                case '\t': 
+                case '\r': 
+                case ' ': {
+                    if (state.foundNumber) {
+                        sActor (*dst)[MAX_ACTORS] = &c->actorData.actor;
+                        
+                        if (state.search == SEARCH_ENTRY) {
+                            break;
+                            
+                        }
+                        
+                        switch (state.search) {
+                            case SEARCH_ENEMY: {
+                                (*dst)[actorIndex].moldId = (unsigned char) 
+                                    state.number;
+                                state.search = SEARCH_ENTRY;
+                                break;
+                                
+                            }
+                            
+                            case SEARCH_COORD_X: {
+                                (*dst)[actorIndex].pos.x = (unsigned short) 
+                                    state.number;
+                                state.search = SEARCH_COORD_Y;
+                                break;
+                                
+                            }
+                            
+                            case SEARCH_COORD_Y: {
+                                (*dst)[actorIndex].pos.y = (unsigned short) 
+                                    state.number;
+                                state.search = SEARCH_ENTRY;
+                                break;
+                                
+                            }
+                            
+                            default:
+                        }
+                        state.foundNumber = 0;
+                        state.number = 0U;
+                        
+                    } else if (!state.keywordEnd) {
+                        state.keywordEnd = 1;
+                        
+                    }
+                    if (byte == ';') {
+                        state.search = SEARCH_ENTRY;
+                        
+                    }
+                    continue;
+                    
+                }
+                
+                case ':': {
+                    state.keywordEnd = 1;
+                    
+                }
+                // Fall-through
+                case 't': 
+                case 'e': 
+                case 'k':
+                case 'i':
+                case 'x': 
+                case 'y': {
+                    if (state.foundNumber) {
+                        break;
+                        
+                    }
+                    
+                    if (state.keywordEnd) {
+                        if (memcmp(state.keyword, vocab.enemy, 
+                                sizeof vocab.enemy) == 0) {
+                            state.search = SEARCH_ENEMY;
+                            
+                        }
+                        if (memcmp(&state.keyword[2], vocab.coord,
+                                sizeof vocab.coord) == 0) {
+                            state.search = SEARCH_COORD_X;
+                            
+                        }
+                        
+                    }
+                    
+                    state.keyword[0] = state.keyword[1];
+                    state.keyword[1] = state.keyword[2];
+                    state.keyword[2] = state.keyword[3];
+                    state.keyword[3] = byte;
+                    state.number = 0U;
+                    state.keywordEnd = 0;
+                    continue;
+                    
+                }
+                
+                case '0':
+                case '1':
+                case '2':
+                case '3':
+                case '4':
+                case '5':
+                case '6':
+                case '7':
+                case '8':
+                case '9': {
+                    state.number = (unsigned short)(state.number * 10U);
+                    state.number = (unsigned short)(state.number 
+                        + (byte-'0'));
+                    state.foundNumber = 1;
+                    continue;
+                    
+                }
+                
+                default:
+            }
+            
+            fclose(f);
+            return 1;
+            
+        }
+    }
+    
+    fclose(f);
+    return (state.search != SEARCH_ENTRY) | (state.foundNumber);
+}
 
 static sActor updatePlayer(sContext const *c);
 #define MAX_VALUE_OF_SIGNED(A) ~~( (1 << (CHAR_BIT*sizeof(A)-1)) - 1 )
@@ -96,7 +343,7 @@ static sActor updatePlayer(sContext const *c);
 #define MOB_GRAVITY 1
 #define MOB_MAX_SPEED_Y 21
 void updateContext(sContext *c) {
-    c->scene.actorData.player = updatePlayer(c);
+    c->scene.cast.actorData.player = updatePlayer(c);
     
     return;
 }
@@ -129,7 +376,7 @@ enum {
 
 #define POS_TO_TILE_INDEX(X, Y, H) ~~((H)*((X)/TILE_PELS) + (Y)/TILE_PELS)
 static sActor updatePlayer(sContext const *c) {
-    sActor p = c->scene.actorData.player;
+    sActor p = c->scene.cast.actorData.player;
     sMold const mold = c->scene.md.data[p.moldId];
     sLevel const level = c->scene.level;
     sCoord const prev = p.pos;
@@ -156,8 +403,6 @@ static sActor updatePlayer(sContext const *c) {
         p.vel.y = 0;
         
     }
-    // XXX: Reuse logic above to keep the player within the bounds of 
-    // the level? (right-most side and highest position)
     
     if (c->input.run.holdDur) {
         maxSpeed = (signed short) (mold.maxSpeed<<8);
@@ -336,7 +581,8 @@ static sActor updatePlayer(sContext const *c) {
         hitting.ceil.right = level.data[POS_TO_TILE_INDEX(p.pos.x + mold.w-1, 
             p.pos.y + mold.h-1, level.h)] % SOLID_TILE_PERIOD == 0;
         
-        if (hitting.ceil.left || hitting.ceil.right) {
+        if (hitting.ceil.left || hitting.ceil.right
+                || (p.pos.y + mold.h-1) > TILE_PELS*level.h) {
             p.pos.y = (unsigned short)((p.pos.y/TILE_PELS)*TILE_PELS
                 - (mold.h-TILE_PELS));
             p.vel.y = 0;
@@ -378,6 +624,15 @@ static sActor updatePlayer(sContext const *c) {
         
     }
     
+    // Prevent players from going beyond the boundaries of the level.
+    if (p.pos.x + mold.w > TILE_PELS*level.w 
+            || (p.vel.subX > 0 && prev.x > p.pos.x)) {
+        p.pos.x = (unsigned short)(level.w * TILE_PELS
+            - mold.w);
+        p.vel.subX = 0;
+        
+    }
+    
     // Evaluate left and right collisions after potentially snapping 
     // the player to the ground.
     hitting.bottom.left = level.data[POS_TO_TILE_INDEX(p.pos.x, p.pos.y, 
@@ -402,6 +657,13 @@ static sActor updatePlayer(sContext const *c) {
             p.pos.x = (unsigned short)(p.pos.x + (TILE_PELS-mold.w));
             
         }
+    }
+    
+    // Do not animate the player when the motion update nullifies 
+    // horizontal velocity.
+    if (p.vel.subX == 0 && p.vel.y == 0) {
+        absFrame = ANIM_PLAYER_WALK_NEUTRAL;
+        
     }
     
     if (c->input.down.holdDur) {

@@ -30,7 +30,7 @@ typedef struct {
 // Mobs can collide with tiles that have identifiers that are 
 // multiples of four.
 #define SOLID_TILE_PERIOD 4
-typedef signed char TILE;
+typedef char TILE;
 typedef struct {
     
     // The game stores the level that it currently loaded as a 
@@ -46,18 +46,27 @@ typedef struct {
     // tile.
     TILE const *data;
     
+    // The game stores the width and height of the level as amounts 
+    // of pixels.
     unsigned short w, h;
+    
     sCoord spawn;
 } sLevel;
 
-#define SPRITES 64
+#define MAX_ACTORS 64
 #define GRAVITY 2
 #define MOLD_NULL 0xFF
 typedef struct {
-    union {
-        sActor player;
-        sActor actor[SPRITES];
-    } actorData;
+    struct {
+        unsigned char actors;
+        union {
+            sActor player;
+            sActor actor[MAX_ACTORS];
+        } actorData;
+    };
+} sCast;
+typedef struct {
+    sCast cast;
     sMoldDirectory md;
     sLevel level;
 } sScene;
@@ -73,7 +82,8 @@ typedef struct {
     } input;
 } sContext;
 
-void startContext(sContext *c);
+int initContext(sContext *c);
+int freeLevelData(void);
 void updateContext(sContext *c);
 
 #define _HEADER_LOGIC

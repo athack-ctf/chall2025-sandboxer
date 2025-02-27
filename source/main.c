@@ -104,8 +104,7 @@ int main(void) {
     
     // Initialise all information except for mold data in the 
     // `sContext` struct instance.
-    startContext(&game);
-    if (game.scene.level.data == NULL) {
+    if (initContext(&game)) {
         PANIC("Could not load the initial stage.", MIRAGE_CANNOT_LOAD_LEVEL);
         
     }
@@ -665,7 +664,8 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                     || DeleteObject(atlas.hb) == 0
                     || DeleteObject(debug.hf) == 0
                     || UnregisterHotKey(hwnd, MIRAGE_HOTKEY_TOGGLE) == 0
-                    || UnregisterHotKey(hwnd, MIRAGE_HOTKEY_TERMINATE) == 0) {
+                    || UnregisterHotKey(hwnd, MIRAGE_HOTKEY_TERMINATE) == 0
+                    || freeLevelData()) {
                 code = MIRAGE_INVALID_FREE;
                 
             }
@@ -679,7 +679,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             RECT wRect;
             HDC spriteMemDc;
             sScene const *s;
-            unsigned int i, pelsOutsideViewportLeft;
+            unsigned int i, pelsBeforePlayersLeft;
             unsigned char prevMoldId;
             
             hdc = BeginPaint(hwnd, ps);
@@ -699,18 +699,23 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                 
             }
             
-            pelsOutsideViewportLeft = (unsigned int)
-                ((s->actorData.player.pos.x
-                + s->md.data[s->actorData.player.moldId].w/2));
-            if (pelsOutsideViewportLeft < VIEWPORT_WIDTH/2) {
-                pelsOutsideViewportLeft = 0;
+            pelsBeforePlayersLeft = (unsigned int)
+                ((s->cast.actorData.player.pos.x
+                + s->md.data[s->cast.actorData.player.moldId].w/2));
+            if (pelsBeforePlayersLeft < VIEWPORT_WIDTH/2) {
+                pelsBeforePlayersLeft = 0;
+                
+            } else if (pelsBeforePlayersLeft
+                    + VIEWPORT_WIDTH/2 >= TILE_PELS*s->level.w) {
+                pelsBeforePlayersLeft = (unsigned int)(TILE_PELS*s->level.w
+                    - VIEWPORT_WIDTH);
                 
             } else {
                 // XXX: Consider case of being at the right-most 
                 // boundary of the level.
                 
-                pelsOutsideViewportLeft = (unsigned int)
-                    (pelsOutsideViewportLeft - VIEWPORT_WIDTH/2);
+                pelsBeforePlayersLeft = (unsigned int)
+                    (pelsBeforePlayersLeft - VIEWPORT_WIDTH/2);
                 
             }
             
@@ -728,13 +733,14 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                 
                 for (j = 0; j < VIEWPORT_HEIGHT/TILE_PELS; ++j) {
                     TILE const t = s->level.data[j 
-                        + (pelsOutsideViewportLeft/TILE_PELS+i)*s->level.h];
+                        + (pelsBeforePlayersLeft/TILE_PELS+i)
+                        *s->level.h];
                     sCoord const tScreen = {
                         (unsigned short)(TILE_PELS*i),
                         (unsigned short)(VIEWPORT_HEIGHT - TILE_PELS*j 
                             - TILE_PELS)
                     };
-                    unsigned int const shift = pelsOutsideViewportLeft 
+                    unsigned int const shift = pelsBeforePlayersLeft 
                         % TILE_PELS;
                     if (!BitBlt(backbuffer.memoryDc, 
                             tScreen.x - (signed int)shift, 
@@ -754,8 +760,8 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             
             // Display all sprites that can appear in the viewport.
             spriteMemDc = CreateCompatibleDC(backbuffer.memoryDc);
-            for (i = 0, prevMoldId = MOLD_NULL; i < SPRITES; ++i) {
-                sActor const actor = s->actorData.actor[i];
+            for (i = 0, prevMoldId = MOLD_NULL; i < MAX_ACTORS; ++i) {
+                sActor const actor = s->cast.actorData.actor[i];
                 
                 // A mold identifier equal to zero outside the mold 
                 // directory identifies a null actor.
@@ -766,9 +772,9 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                     unsigned char frameIndex;
                     
                     if ((unsigned int)(actor.pos.x+mold.w-1) 
-                            < pelsOutsideViewportLeft
+                            < pelsBeforePlayersLeft
                             || actor.pos.x 
-                            >= pelsOutsideViewportLeft+VIEWPORT_WIDTH) {
+                            >= pelsBeforePlayersLeft+VIEWPORT_WIDTH) {
                         continue;
                         
                     }
@@ -823,11 +829,11 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                     // Make the sprite's point of reference the left 
                     // side of the screen.
                     para[0].x = (para[0].x 
-                        - (signed long int) pelsOutsideViewportLeft);
+                        - (signed long int) pelsBeforePlayersLeft);
                     para[1].x = (para[1].x 
-                        - (signed long int) pelsOutsideViewportLeft);
+                        - (signed long int) pelsBeforePlayersLeft);
                     para[2].x = (para[2].x 
-                        - (signed long int) pelsOutsideViewportLeft);
+                        - (signed long int) pelsBeforePlayersLeft);
                     
                     
                     if (!PlgBlt(backbuffer.memoryDc, 
@@ -855,7 +861,8 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                 // Assume that the horizontal position is at a lower 
                 // address then the vertical position.
                 memcpy(metricData + METRICS - 2, // X and Y coordinates
-                    &s->actorData.player.pos, sizeof s->actorData.player.pos);
+                    &s->cast.actorData.player.pos, 
+                    sizeof s->cast.actorData.player.pos);
             
                 // Update the metrics in the debug menu for the 
                 // current frame. This process is inefficient, 

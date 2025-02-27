@@ -58,7 +58,7 @@ int initMoldDirectory(sMoldDirectory *dstMold, HDC dstMemDc,
         GENERIC_READ,
         FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
         NULL,
-        OPEN_ALWAYS,
+        OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL,
         NULL);
     if (hMoldInfoFile == INVALID_HANDLE_VALUE) {
@@ -148,7 +148,9 @@ static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer,
                 case '}':
                         // Assume that the scope level is non-zero.
                         
-                        if (state.braces-- == 0) {
+                        if (state.braces-- == 1) {
+                            unsigned char temp;
+                            
                             if (state.moldIndex-- == 0) {
                                 
                                 // The process ignores any data 
@@ -157,10 +159,13 @@ static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer,
                                 
                             }
                             
+                            temp = state.moldIndex;
+                            
                             // Wipe out all mold information before 
                             // beginning to process the next mold 
                             // entry.
                             memset(&state, 0x00, sizeof state);
+                            state.moldIndex = temp;
                             state.search = MOLDINFO_ENTRY;
                             
                         } else {
@@ -217,7 +222,7 @@ static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer,
                             }
                             
                             case MOLDINFO_NAME: {
-                                unsigned int const pels = (unsigned int)
+                                unsigned long const pels = (unsigned long)
                                     (dstMold->data[state.moldIndex].w
                                     * dstMold->data[state.moldIndex].h
                                     * dstMold->data[state.moldIndex].frames);
@@ -440,9 +445,10 @@ static int loadSprite(sMold *dstMold, sPixel *pelBuffer,
         GENERIC_READ,
         FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
         NULL,
-        OPEN_ALWAYS,
+        OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL,
         NULL);
+    
     if (hGraphicFile == INVALID_HANDLE_VALUE) {
         PANIC("The process could not locate sprite data.",
             MIRAGE_NO_GFX_SPRITE);
@@ -451,13 +457,13 @@ static int loadSprite(sMold *dstMold, sPixel *pelBuffer,
     }
     
     do {
-        unsigned int pixels;
+        unsigned long pixels;
         sSprite s;
         
         bih->biWidth = dstMold->w;
         bih->biHeight = dstMold->h * dstMold->frames;
         
-        pixels = (unsigned int)(bih->biWidth * bih->biHeight);
+        pixels = (unsigned long)(bih->biWidth * bih->biHeight);
         if (decodeGfx(pelBuffer, hGraphicFile, pixels)) {
             PANIC("The process failed to load sprite data.",
                 MIRAGE_LOAD_GFX_FAIL);
@@ -589,7 +595,7 @@ HBITMAP initAtlas(HDC dstMemDc, BITMAPINFO *bi) {
         GENERIC_READ,
         FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
         NULL,
-        OPEN_ALWAYS,
+        OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL,
         NULL);
     if (hf == INVALID_HANDLE_VALUE) {

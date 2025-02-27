@@ -8,8 +8,9 @@
 
 #define DIR_MOLDINFO "user\\Mukki\\moldInfo.txt"
 #define DIR_ATLAS "user\\Mukki\\atlas" EXTENSION_GFX
-#define DIR_GFX_GUY_NOTHING "enemy\\man" EXTENSION_GFX
 #define DIR_SPRITE "enemy"
+#define DIR_LEVEL_TILEMAP "user\\Abe\\tuto.lvl"
+#define DIR_LEVEL_GEN "user\\Abe\\tuto.gen"
 
 #define _HEADER_GLOBALDICT
 #endif

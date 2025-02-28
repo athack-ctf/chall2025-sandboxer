@@ -458,7 +458,6 @@ static int loadSprite(sMold *dstMold, sPixel *pelBuffer,
     
     do {
         unsigned long pixels;
-        sSprite s;
         
         bih->biWidth = dstMold->w;
         bih->biHeight = dstMold->h * dstMold->frames;
@@ -471,8 +470,10 @@ static int loadSprite(sMold *dstMold, sPixel *pelBuffer,
             break;
             
         } else {
+            sSprite s;
             char *p;
-            unsigned long byteIndex, bitIndex;
+            unsigned long byteIndex;
+            unsigned int bitIndex, rowBits, rowIndex, paddingBytesPerRow;
             
             // Interpret as a bottom-up bitmap.
             bih->biHeight = -bih->biHeight;
@@ -493,19 +494,38 @@ static int loadSprite(sMold *dstMold, sPixel *pelBuffer,
             
             p = (char*)pelBuffer;
             
+            // The amount of bits in each row must be a multiple of a 
+            // Sixteen. Sixteen is the amount of bits in one word.
+            rowBits = (((unsigned int)bih->biWidth+15) / 16) * 16;
+            paddingBytesPerRow = (rowBits - (unsigned int)bih->biWidth) / 8;
+            
             // Assume that eight divides the total amount of pixels in 
             // the source bitmap. This assumption does not matter here 
             // since this total is a multiple of sixty-four.
-            // XXX: Pad rows to dwords?
-            for (bitIndex = 0, byteIndex = 0; bitIndex < pixels; ++byteIndex) {
-                signed int shift;
-                char byte = 0x00;
+            for (rowIndex = 0, bitIndex = 0, byteIndex = 0; 
+                    rowIndex < (unsigned int)bih->biHeight; 
+                    ++rowIndex) {
+                unsigned int payloadBitIndex;
+                unsigned int const width = (unsigned int)bih->biWidth;
                 
-                for (shift = 7; shift >= 0; --shift, ++bitIndex) {
-                    byte |= (char)((pelBuffer[bitIndex].a > 0) << shift);
+                for (payloadBitIndex = 0; 
+                        payloadBitIndex < width;) {
+                    signed int shift;
+                    char byte = 0x00;
                     
+                    for (shift = 7; 
+                            shift >= 0 && payloadBitIndex < width; 
+                            --shift) {
+                        byte |= (char)((pelBuffer[bitIndex++].a>0) 
+                            << shift);
+                        ++payloadBitIndex;
+                    }
+                    p[byteIndex++] = byte;
                 }
-                p[byteIndex] = byte;
+                
+                // Do not set values to padding bits, since they will 
+                // not appear anyways.
+                byteIndex += paddingBytesPerRow;
             }
             
             s.maskRight = CreateBitmap((signed int)bih->biWidth, 
@@ -521,6 +541,7 @@ static int loadSprite(sMold *dstMold, sPixel *pelBuffer,
                 
             }
             
+            // Mirror all bits row-wise in the monochrome bitmap.
             for (byteIndex = 0; byteIndex < pixels/8; ++byteIndex) {
                 signed int shift = 7;
                 unsigned char mirrorByte = 0x00, 
@@ -536,8 +557,6 @@ static int loadSprite(sMold *dstMold, sPixel *pelBuffer,
                 mirrorByte = (unsigned char)(mirrorByte|sourceByte);
                 p[byteIndex] = (char)mirrorByte;
             }
-            
-            // XXX: Fix for sprites of larger widths.
             for (byteIndex = 0; byteIndex < pixels/8; 
                     byteIndex = byteIndex + (unsigned long)(bih->biWidth/8)) {
                 char const temp = p[byteIndex+1];

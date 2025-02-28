@@ -1,6 +1,3 @@
-// XXX: Move assert header to function definitions that rely on it.
-#include <assert.h>
-
 // XXX: Eventually remove once `printf` debugging shenanigans are over.
 #include <stdio.h>
 
@@ -65,31 +62,42 @@ int main(void) {
     // initialise the mold data. The process' entry point does not 
     // have access to any graphical functionalities or information. 
     // This limitation requires forwarding the mold directory in the 
-    // `WM_CREATE` window procedure message.
-    hwnd = constructWindow(&WindowProcedure, (void*)&game.scene.md, 
+    // `WM_CREATE` window procedure message. The window painting logic 
+    // also reacts according to the actors and level.
+    hwnd = constructWindow(&WindowProcedure, (void*)&game.scene, 
         sizeof&game.scene);
     
-    // Set the last error to zero to anticipate potential errors from 
-    // the `SetWindowLongPtr` function.
-    SetLastError(0);
-    
-    // The window procedure must also have access to the game's 
-    // current scene. The call to the `SetWindowLongPtr` function 
-    // stores this scene's address as a window attribute. The window 
-    // creation procedure must allocate additional memory to house 
-    // this address. Calls to the `SetWindowLongPtr` can return zero 
-    // and does not necessarily indicate failure. A call to the 
-    // `GetLastError` function tells whether the function call failed 
-    // or not.
-    SetWindowLongPtr(hwnd, 0, (LONG_PTR)&game.scene);
-    if (GetLastError() != 0) {
-        PANIC("The process could not set a window attribute.",
-            MIRAGE_WINDOW_SET_ATTRIBUTE_FAIL);
-        
-    }
-    
-    {
+    // The window initialisation procedure is responsible for posting 
+    // any quit message after an error. However, the process should 
+    // still go to the main program loop regardless of errors. This 
+    // flow ensures that the process can go through the same quiting 
+    // procedure.
+    if (hwnd != NULL) {
         SYSTEM_INFO si[1];
+        
+        // Set the last error to zero to anticipate potential errors 
+        // from the `SetWindowLongPtr` function.
+        SetLastError(0);
+        
+        // The window procedure must also have access to the game's 
+        // current scene. The call to the `SetWindowLongPtr` function 
+        // stores this scene's address as a window attribute. The 
+        // window creation procedure must allocate additional memory 
+        // to house this address. Calls to the `SetWindowLongPtr` can 
+        // return zero and does not necessarily indicate failure. A 
+        // call to the `GetLastError` function tells whether the 
+        // function call failed or not.
+        SetWindowLongPtr(hwnd, 0, (LONG_PTR)&game.scene);
+        if (GetLastError() != 0) {
+            PANIC("The process could not set a window attribute.",
+                MIRAGE_WINDOW_SET_ATTRIBUTE_FAIL);
+            
+        }
+        
+        // Zero out the durations for each possible input. The window 
+        // initialisation procedure is not responsible for clearing out 
+        // this member.
+        ZeroMemory(&game.input, sizeof game.input);
         
         // Initialize to the maximum possible value prevent a  
         // statistic update from occuring immediately.
@@ -100,28 +108,23 @@ int main(void) {
         // The `GetSystemInfo` function cannot fail.
         GetSystemInfo(si);
         processors = (unsigned short) si->dwNumberOfProcessors;
-    }    
-    
-    // Initialise all information except for mold data in the 
-    // `sContext` struct instance.
-    if (initContext(&game)) {
-        PANIC("Could not load the initial stage.", MIRAGE_CANNOT_LOAD_LEVEL);
+        
+        // The `GetCurrentProcess` function cannot fail. It returns a 
+        // constant.
+        hproc = GetCurrentProcess();
+        
+        // The process should not bother if the operating system failed 
+        // to set its priority.
+        SetPriorityClass(hproc, HIGH_PRIORITY_CLASS);
+        
+        // The process should not bother if it could not set the timer 
+        // resolution.
+        timeBeginPeriod(clock.virtualTimerResMs);
+        
+        clock.startTicks = getTicks();
         
     }
     
-    // The `GetCurrentProcess` function cannot fail. It returns a 
-    // constant.
-    hproc = GetCurrentProcess();
-    
-    // The process should not bother if the operating system failed 
-    // to set its priority.
-    SetPriorityClass(hproc, HIGH_PRIORITY_CLASS);
-    
-    // The process should not bother if it could not set the timer 
-    // resolution.
-    timeBeginPeriod(clock.virtualTimerResMs);
-    
-    clock.startTicks = getTicks();
     for (;;) {
         MSG msg[1];
         size_t i;
@@ -313,8 +316,16 @@ int main(void) {
                 (isDown ? (a[i].holdDur + isDown)
                 : 0);
         }
-        updateContext(&game);
         
+        // Update the player outside the window procedure. No decision 
+        // in this function call shall affect the player. Non-playable 
+        // characters do behave in function of whether they are 
+        // on-screen or not. As such, the paint handler in the window 
+        // procedure updates the non-playable characters.
+        game.scene.cast.actorData.player = updatePlayer(&game);
+        
+        // The windows painting procedure is responsible for updating 
+        // the state of the game.
         RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE|RDW_UPDATENOW);
         
         clock.loops++;
@@ -385,8 +396,11 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             MIRAGE_HOTKEY_TOGGLE,
             MIRAGE_HOTKEY_TERMINATE
         };
+        int error;
         
         case WM_CREATE: {
+            error = 1;
+            
             hdc = GetDC(hwnd);
             if (hdc == NULL) {
                 PANIC("The process failed to get the current device context",
@@ -401,7 +415,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             RECT debugRect;
             size_t i, lastIndex, labels, maxLen;
             HFONT initialFont;
-            sMoldDirectory *md;
+            sScene *s;
             char const metricLabelText[] =
                 "FPS:\n"
                 "CPU Usage:\n"
@@ -462,8 +476,20 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             // set the `lpCreateParams` member in this struct to a
             // pointer. This member stores the address of an 
             // `sMoldDirectory` structure instance.
-            md = (sMoldDirectory*) ((CREATESTRUCT*)lParam)->lpCreateParams;
-            if (initMoldDirectory(md, backbuffer.memoryDc, &bi)) {
+            s = (sScene*) ((CREATESTRUCT*)lParam)->lpCreateParams;
+            
+            // Initialise all information except for mold data in the 
+            // `sContext` struct instance.
+            if (initContext(s)) {
+                // The call to the `initContext` function does not 
+                // post any message.
+                PANIC("Could not load the initial stage.", 
+                    MIRAGE_CANNOT_LOAD_LEVEL);
+                break;
+                
+            }
+            
+            if (initMoldDirectory(&s->md, backbuffer.memoryDc, &bi)) {
                 // The `initMoldDirectory` function call is 
                 // responsible for posting the quit message.
                 break;
@@ -612,10 +638,23 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             // Terminate the process.
             RegisterHotKey(hwnd, MIRAGE_HOTKEY_TERMINATE, 
                 MOD_CONTROL|MOD_NOREPEAT, 'W');
+            
+            // Set the error code to zero if the process carried out 
+            // all initialisations correctly.
+            error = 0;
         } while(0);
         // Fall-through
         {
             ReleaseDC(hwnd, hdc);
+            
+            // Immediately destroy the window if an error occurs. The 
+            // pointers to graphic, actor, and level data can be 
+            // garbage after an error. It is safer to prevent the 
+            // window rendering logic from running.
+            if (error) {
+                DestroyWindow(hwnd);
+            
+            }
             
             // Then invoke the default behaviour for the `WM_CREATE`
             // message.
@@ -645,13 +684,15 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                 }
                 
                 case MIRAGE_HOTKEY_TERMINATE: {
-                    PostQuitMessage(MIRAGE_OK);
+                    DestroyWindow(hwnd);
                     break;
                     
                 }
             }
             break;
+            
         }
+        
         case WM_DESTROY: {
             MirageError code = MIRAGE_OK;
             
@@ -674,11 +715,12 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             break;
             
         }
+        
         case WM_PAINT: {
             PAINTSTRUCT ps[1];
             RECT wRect;
             HDC spriteMemDc;
-            sScene const *s;
+            sScene *s;
             unsigned int i, pelsBeforePlayersLeft;
             unsigned char prevMoldId;
             
@@ -693,7 +735,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             // A call to the `GetWindowLongPtr` function can return 
             // zero if it fails.
             if (s == NULL) {
-                PANIC("The process could not set a window attribute.",
+                PANIC("The process could not get a window attribute.",
                     MIRAGE_WINDOW_GET_ATTRIBUTE_FAIL);
                 break;
                 
@@ -749,7 +791,10 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                             0, t*TILE_PELS, SRCCOPY)) {
                         PANIC("The process failed to render a tile.",
                             MIRAGE_BACKBUFFER_WRITE_TILE_FAIL);
-                        i = (unsigned int) -1;
+                        
+                        // Minus two in order to cancel the effects 
+                        // of the increment.
+                        i = (unsigned int) -2;
                         break;
                         
                     }
@@ -760,8 +805,8 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             
             // Display all sprites that can appear in the viewport.
             spriteMemDc = CreateCompatibleDC(backbuffer.memoryDc);
-            for (i = 0, prevMoldId = MOLD_NULL; i < MAX_ACTORS; ++i) {
-                sActor const actor = s->cast.actorData.actor[i];
+            for (i = 0, prevMoldId = MOLD_NULL; i < s->cast.actors; ++i) {
+                sActor actor = s->cast.actorData.actor[i];
                 
                 // A mold identifier equal to zero outside the mold 
                 // directory identifies a null actor.
@@ -779,6 +824,14 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                         
                     }
                     
+                    // Do not update the player again.
+                    if (&s->cast.actorData.player 
+                            - &s->cast.actorData.actor[0] != i) {
+                        s->cast.actorData.actor[i] = actor = 
+                            updateNpc(s, actor);
+                        
+                    }
+                    
                     if (actor.moldId != prevMoldId) {
                         // Ignore the return value as what the device 
                         // context previously selected is not 
@@ -790,17 +843,6 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                     // Otherwise, the previous iteration already 
                     // selected the source bitmap for the block 
                     // transfer.
-                    
-                    // XXX: Consider the position of the player when 
-                    // calculating the screen position of sprites. The 
-                    // player's camera affects which sprites are 
-                    // visible.
-                    // XXX: Do not perform a block transfer if the 
-                    // actor is offscreen? The `BitBlt` function does 
-                    // handle this logic, but skipping it saves a 
-                    // function call.
-                    // XXX: Sprites reaching the left-most part of the 
-                    // viewport should not render outside the screen.
                     
                     if (actor.frame > -1) {
                         para[0].x = actor.pos.x;

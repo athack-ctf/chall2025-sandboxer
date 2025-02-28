@@ -2,14 +2,14 @@ from sys import argv
 from itertools import zip_longest
 
 PIXELS_PER_CHUNK = 64
-BYTES_PER_PIXEL = 3
+BYTES_PER_PIXEL = 4
 MAX_COLORS = 8
 
 def encode(itr, file):
     
     # The graphic data parser assigns special meaning to the color 
     # magenta. This color represents transparency
-    palette = [(0xFF, 0x00, 0xFF),]
+    palette = [(0xFF, 0x00, 0xFF, 0xFF),]
     data = []
     for chunk in itr:
         chunk = tuple(zip(* [iter(chunk)]*BYTES_PER_PIXEL))

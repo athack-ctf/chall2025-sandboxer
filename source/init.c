@@ -8,8 +8,8 @@
 HWND constructWindow(
         LRESULT (*windowProcedure)(HWND, unsigned int, WPARAM, LPARAM),
         sMoldDirectory *initInfo, unsigned int extraBytes) {
-    WNDCLASS wc = { 0 }; // Initialize all handles to to null pointer 
-                         // values. This initialization also sets all 
+    WNDCLASS wc = { 0 }; // Initialise all handles to to null pointer 
+                         // values. This initialisation also sets all 
                          // additional allocation byte amounts to zero.
     HWND hwnd;
     ATOM wa;
@@ -24,8 +24,6 @@ HWND constructWindow(
     wc.lpfnWndProc = windowProcedure;
     wc.lpszMenuName = WINDOW_MENU_NAME;
     wc.lpszClassName = WINDOW_CLASS_NAME;
-    
-    // XXX: Is it even necessary to allocate extra bytes?
     wc.cbWndExtra = (int) extraBytes;
     
     wa = RegisterClass(&wc);
@@ -51,8 +49,8 @@ HWND constructWindow(
                          // obtains with the `WM_CREATE` message.
         );
     if (hwnd == NULL) {
-        PANIC("The process failed to create a window.",
-            MIRAGE_WINDOW_CONSTRUCTION_FAIL);
+        // The window initialisation procedure is responsible for 
+        // posting any quit message.
         return NULL;
         
     }

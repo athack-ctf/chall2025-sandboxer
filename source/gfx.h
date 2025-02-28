@@ -1,7 +1,5 @@
 #ifndef _HEADER_GFX
 
-#define VIEWPORT_HEIGHT 288
-#define VIEWPORT_WIDTH 512
 #define VIEWPORT_BPP (8*sizeof(sPixel))
 
 #define UNIQUE_TILES 16U

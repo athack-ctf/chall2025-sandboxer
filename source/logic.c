@@ -8,19 +8,10 @@
 static int loadLevel(sLevel *dst);
 static int initActorData(sCast *c);
 
-int initContext(sContext *c) {
+int initContext(sScene *s) {
     sActor player;
     
-    // Set all bytes in the mold data to the representation of the 
-    // null mold. This initialisation applies to all sprites except 
-    // for the player. This setup causes only the player to appear and 
-    // no other sprite. The other sprites are null sprites at this 
-    // initial point.
-    memset(&c->scene.cast.actorData.player + 1, MOLD_NULL, 
-        sizeof c->scene.cast.actorData 
-        - sizeof c->scene.cast.actorData.player);
-    
-    if (loadLevel(&c->scene.level) || initActorData(&c->scene.cast)) {
+    if (loadLevel(&s->level) || initActorData(&s->cast)) {
         return 1;
         
     }
@@ -30,19 +21,12 @@ int initContext(sContext *c) {
     player.vel.subX = 0;
     
     // The player begins by facing right.
-    player.frame = 0;
     player.timer = 0;
-    
-    // XXX: Increase player health.
     player.health = 1;
     
-    player.pos = c->scene.level.spawn;
+    player.pos = s->level.spawn;
     
-    c->scene.cast.actorData.player = player;
-    
-    // Zero out all player input states. This configuration prevents 
-    // guarantees that the game does not recognize any initial inputs.
-    memset(&c->input, 0x00, sizeof c->input);
+    s->cast.actorData.player = player;
     
     return 0;
 }
@@ -159,17 +143,26 @@ static int loadLevel(sLevel *dst) {
 static int initActorData(sCast *c) {
     FILE *f;
     char buffer[64];
-    unsigned int ioBytes, actorIndex;
+    unsigned int ioBytes;
     struct {
-        char keyword[4], foundNumber, keywordEnd;
+        char keyword[4];
         unsigned short number;
         enum {
+            PARSE_SEPARATOR,
+            PARSE_KEYWORD,
+            PARSE_NUMBER,
+            PARSE_WHITESPACE
+        } parse;
+        enum {
+            SEARCH_PREPARE,
             SEARCH_ENTRY,
             SEARCH_ENEMY,
             SEARCH_COORD_X,
-            SEARCH_COORD_Y
+            SEARCH_COORD_Y,
+            SEARCH_HEALTH
         } search;
     } state;
+    unsigned char actorIndex;
     
     f = fopen(DIR_LEVEL_GEN, "rb");
     if (f == NULL) {
@@ -178,27 +171,50 @@ static int initActorData(sCast *c) {
     }
     
     memset(&state.keyword, 0x00, sizeof state.keyword);
-    state.search = SEARCH_ENTRY;
-    state.keywordEnd = 1;
-    state.foundNumber = 0;
-    actorIndex = 0;
+    state.search = SEARCH_PREPARE;
+    state.number = 0U;
+    state.parse = PARSE_WHITESPACE;
+    actorIndex = 0U;
     while ((ioBytes = (unsigned int)
             fread(buffer, sizeof*buffer, sizeof buffer, f)) != 0) {
-        unsigned int byteIndex;
+        unsigned int byteIndex = 0;
         
-        for (byteIndex = 0; byteIndex < ioBytes; ) {
-            char const byte = buffer[byteIndex++];
+        while (byteIndex < ioBytes) {
             struct {
                 char const enemy[4];
                 char const coord[2];
-            } vocab = {
+                char const health[2];
+            } const vocab = {
                 "teki",
-                "xy"
+                "xy",
+                "hp"
             };
+            char byte;
+            
+            if (state.search == SEARCH_PREPARE) {
+                
+                // Default per-enemy attributes.
+                c->actorData.actor[actorIndex].vel.subX = 0;
+                c->actorData.actor[actorIndex].vel.y = 0;
+                c->actorData.actor[actorIndex].moldId = MOLD_NULL;
+                c->actorData.actor[actorIndex].health = +1;
+                
+                // An actor faces rightwards by default.
+                c->actorData.actor[actorIndex].frame = 0;
+                
+                // All actors begin their respective timers at zero.
+                c->actorData.actor[actorIndex].timer = 0;
+                
+                // Leave other attributes as undefined.
+                
+                state.search = SEARCH_ENTRY;
+                
+            }
+            byte = buffer[byteIndex++];
             
             switch (byte) {
                 case ';': {
-                    if (++actorIndex >= ARRAY_ELEMENTS(c->actorData.actor)) {
+                    if (actorIndex >= ARRAY_ELEMENTS(c->actorData.actor)) {
                         break;
                         
                     }
@@ -209,7 +225,7 @@ static int initActorData(sCast *c) {
                 case '\t': 
                 case '\r': 
                 case ' ': {
-                    if (state.foundNumber) {
+                    if (state.parse == PARSE_NUMBER) {
                         sActor (*dst)[MAX_ACTORS] = &c->actorData.actor;
                         
                         if (state.search == SEARCH_ENTRY) {
@@ -238,21 +254,33 @@ static int initActorData(sCast *c) {
                                 (*dst)[actorIndex].pos.y = (unsigned short) 
                                     state.number;
                                 state.search = SEARCH_ENTRY;
+                                
+                                break;
+                                
+                            }
+                            
+                            case SEARCH_HEALTH: {
+                                (*dst)[actorIndex].health = (signed char) 
+                                    state.number;
+                                state.search = SEARCH_ENTRY;
                                 break;
                                 
                             }
                             
                             default:
                         }
-                        state.foundNumber = 0;
+                        state.parse = PARSE_WHITESPACE;
                         state.number = 0U;
                         
-                    } else if (!state.keywordEnd) {
-                        state.keywordEnd = 1;
+                    } else if (state.parse != PARSE_WHITESPACE 
+                            && state.parse != PARSE_SEPARATOR) {
+                        state.parse = PARSE_SEPARATOR;
                         
                     }
                     if (byte == ';') {
-                        state.search = SEARCH_ENTRY;
+                        state.search = SEARCH_PREPARE;
+                        state.parse = PARSE_WHITESPACE;
+                        ++actorIndex;
                         
                     }
                     continue;
@@ -260,7 +288,7 @@ static int initActorData(sCast *c) {
                 }
                 
                 case ':': {
-                    state.keywordEnd = 1;
+                    state.parse = PARSE_SEPARATOR;
                     
                 }
                 // Fall-through
@@ -269,23 +297,38 @@ static int initActorData(sCast *c) {
                 case 'k':
                 case 'i':
                 case 'x': 
-                case 'y': {
-                    if (state.foundNumber) {
+                case 'y':
+                case 'h':
+                case 'p':{
+                    if (state.parse == PARSE_NUMBER) {
                         break;
                         
                     }
                     
-                    if (state.keywordEnd) {
-                        if (memcmp(state.keyword, vocab.enemy, 
+                    if (state.parse == PARSE_SEPARATOR) {
+                        char const *end = 
+                            &state.keyword[sizeof state.keyword];
+                        
+                        if (memcmp(end - sizeof vocab.enemy, vocab.enemy, 
                                 sizeof vocab.enemy) == 0) {
                             state.search = SEARCH_ENEMY;
                             
-                        }
-                        if (memcmp(&state.keyword[2], vocab.coord,
-                                sizeof vocab.coord) == 0) {
+                        } else if (memcmp(end - sizeof vocab.coord, 
+                                vocab.coord, sizeof vocab.coord) == 0) {
                             state.search = SEARCH_COORD_X;
                             
+                        } else if (memcmp(end - sizeof vocab.health, 
+                                vocab.health, sizeof vocab.health) == 0) {
+                            state.search = SEARCH_HEALTH;
+                            
+                        } else {
+                            
+                            // The parser did not recognize a keyword.
+                            break;
+                            
                         }
+                        
+                        
                         
                     }
                     
@@ -294,7 +337,7 @@ static int initActorData(sCast *c) {
                     state.keyword[2] = state.keyword[3];
                     state.keyword[3] = byte;
                     state.number = 0U;
-                    state.keywordEnd = 0;
+                    state.parse = PARSE_KEYWORD;
                     continue;
                     
                 }
@@ -309,10 +352,18 @@ static int initActorData(sCast *c) {
                 case '7':
                 case '8':
                 case '9': {
+                    if (state.search == SEARCH_ENTRY) {
+                        
+                        // A number must follow a keyword. Otherise, 
+                        // syntax is illegal.
+                        break;
+                        
+                    }
+                    
                     state.number = (unsigned short)(state.number * 10U);
                     state.number = (unsigned short)(state.number 
                         + (byte-'0'));
-                    state.foundNumber = 1;
+                    state.parse = PARSE_NUMBER;
                     continue;
                     
                 }
@@ -326,34 +377,42 @@ static int initActorData(sCast *c) {
         }
     }
     
-    fclose(f);
-    return (state.search != SEARCH_ENTRY) | (state.foundNumber);
-}
-
-static sActor updatePlayer(sContext const *c);
-#define MAX_VALUE_OF_SIGNED(A) ~~( (1 << (CHAR_BIT*sizeof(A)-1)) - 1 )
-#define ABS(A) ~~((A)>0?(A):-(A))
-
-// A result that overflows the amount of bits in signed values is 
-// undefined behaviour. The dynamics simulator detects whether a mob 
-// will cause this overflow after it accelerates.
-#define SUBVEL_WILL_OVERFLOW(SUBVEL, ACCEL) !!(ABS(SUBVEL) \
-    > MAX_VALUE_OF_SIGNED(SUBVEL)-(ACCEL))
-
-#define MOB_GRAVITY 1
-#define MOB_MAX_SPEED_Y 21
-void updateContext(sContext *c) {
-    c->scene.cast.actorData.player = updatePlayer(c);
+    c->actors = actorIndex;
     
-    return;
+    fclose(f);
+    
+    // The file must end with a semi-colon preceding no other lexical 
+    // item.
+    return state.search != SEARCH_PREPARE;
 }
+
+typedef struct {
+    char left, right;
+} sCol;
+
+static sCol collides(unsigned int x, unsigned int y, unsigned width, 
+    sLevel const *l);
+#define collides(x, y, w, l) collides((unsigned short)(x), \
+    (unsigned short)(y), (unsigned short)(w), (l))
+
+#define ABS(X) ~~((X)>0 ? (X) : -(X))
+#define POS_TO_TILE_INDEX(X, Y, H) ~~((H)*((X)/TILE_PELS) + (Y)/TILE_PELS)
+#define ACTOR_GRAVITY 1
+#define MOB_MAX_SPEED_Y 21
+
+#define ANIM_GAIT_TRANSITION_PERIOD 8U
+
+enum {
+    MOLDID_PLAYER,
+    MOLDID_HUNTER,
+    MOLDID_NINGEN
+};
 
 #define PLAYER_WALK_COEF(VEL) ~~(1*(VEL)/ 2)
 #define PLAYER_FRICTION 26
 #define PLAYER_JUMP_HOLD_FRAMES 18
 #define PLAYER_SLIDE_HOLD_FRAMES 32
 #define PLAYER_JUMP_VEL 7
-
 enum {
     ANIM_PLAYER_WALK_NEUTRAL,
     ANIM_PLAYER_WALK_LEFT,
@@ -369,13 +428,246 @@ enum {
     ANIM_PLAYER_JUMP,
     ANIM_PLAYER_CROUCH
 };
-
 #define ANIM_DASH_SLIDE_TRANSITION 2U
 #define ANIM_SLIDE_GETUP_TRANSITION 3U
-#define ANIM_GAIT_TRANSITION_PERIOD 8U
 
-#define POS_TO_TILE_INDEX(X, Y, H) ~~((H)*((X)/TILE_PELS) + (Y)/TILE_PELS)
-static sActor updatePlayer(sContext const *c) {
+#define HUNTER_AIM_PERIOD 40U
+#define HUNTER_DAMAGE 1U
+enum {
+    ANIM_HUNTER_WALK_NEUTRAL,
+    ANIM_HUNTER_WALK_LEFT,
+    ANIM_HUNTER_WALK_RIGHT,
+    ANIM_HUNTER_RUN_NEUTRAL,
+    ANIM_HUNTER_RUN_LEFT,
+    ANIM_HUNTER_RUN_RIGHT,
+    ANIM_HUNTER_DASH,
+    ANIM_HUNTER_SLIDE,
+    ANIM_HUNTER_GETUP,
+    ANIM_HUNTER_HURT,
+    ANIM_HUNTER_DEAD,
+    ANIM_HUNTER_JUMP,
+    ANIM_HUNTER_CROUCH,
+    ANIM_HUNTER_AIM
+};
+
+sActor updateNpc(sScene *s, sActor a) {
+    sMold const mold = s->md.data[a.moldId];
+    sLevel const *level = &s->level;
+    struct {
+        sCol floor, step;
+    } hitting;
+    signed char const velX = (signed char)(a.vel.subX>>8);
+    char facingRight = a.frame >= 0;
+    unsigned char absFrame = (unsigned char) 
+        (facingRight ? a.frame : ~a.frame);
+    
+    a.pos.y = (unsigned short)(a.pos.y + a.vel.y);
+    a.pos.x = (unsigned short)(a.pos.x + velX);
+    
+    hitting.floor = collides(a.pos.x, a.pos.y-1, mold.w, level);
+    if (hitting.floor.left||hitting.floor.right) {
+        a.pos.y = (unsigned short) (((a.pos.y+TILE_PELS-1)/TILE_PELS)
+            * TILE_PELS);
+        a.vel.y = 0;
+        
+    } else {
+        a.vel.y = (signed char) (a.vel.y - ACTOR_GRAVITY);
+        
+    }
+    
+    hitting.step = collides(a.pos.x, a.pos.y+TILE_PELS-1, mold.w, level);
+    if (hitting.step.left) {
+        a.pos.x = (unsigned short)(((a.pos.x + TILE_PELS-1) / TILE_PELS)
+            * TILE_PELS);
+            
+        a.vel.subX = 0;
+        
+    } else if (hitting.step.right) {
+        a.pos.x = (unsigned short)(((a.pos.x + mold.w-1) / TILE_PELS)
+            * TILE_PELS - mold.w);
+        a.vel.subX = 0;
+        
+    }
+    
+    switch (a.moldId) {
+        case MOLDID_HUNTER: {
+            sMold const playerMold = s->md.data
+                [s->cast.actorData.player.moldId];
+            sActor const pa = s->cast.actorData.player;
+            unsigned char seePlayer;
+            
+            if (facingRight) {
+                if (a.vel.subX < mold.maxSpeed << 8) {
+                    a.vel.subX = (signed short) 
+                        (a.vel.subX + mold.subAccel);
+                    
+                }
+                
+                if (hitting.step.right) {
+                    facingRight = 0;
+                    
+                }
+                
+            } else {
+                if (a.vel.subX > -mold.maxSpeed << 8) {
+                    a.vel.subX = (signed short) 
+                        (a.vel.subX - mold.subAccel);
+                    
+                }
+                
+                if (hitting.step.left) {
+                    facingRight = 1;
+                    
+                }
+                
+            }
+            
+            if (a.pos.y >= pa.pos.y && a.pos.y < pa.pos.y+playerMold.h
+                    && ((facingRight && pa.pos.x >= a.pos.x+mold.w)
+                    || (!facingRight && pa.pos.x < a.pos.x))) {
+                unsigned const int step = facingRight ? TILE_PELS :
+                    (unsigned int) -TILE_PELS;
+                unsigned int x, y, start, boundary;
+                
+                start = a.pos.x + mold.w/2U;
+                y = a.pos.y + mold.h/2U;
+                seePlayer = 1;
+                
+                if (pa.pos.x >= VIEWPORT_WIDTH/2U) {
+                    boundary = start + (facingRight ? VIEWPORT_WIDTH/2U
+                        : (unsigned int) -(VIEWPORT_WIDTH/2U));
+                    
+                } else {
+                    boundary = facingRight ? VIEWPORT_WIDTH/2U : 0;
+                    
+                }
+                
+                for (x = start; 
+                        facingRight ? x<boundary : x>boundary; 
+                        x += step) {
+                    TILE t;
+                    
+                    if (facingRight) {
+                        if (x > pa.pos.x) {
+                            seePlayer = 1;
+                            break;
+                            
+                        }
+                        
+                    } else {
+                        if (x < pa.pos.x) {
+                            seePlayer = 1;
+                            break;
+                            
+                        }
+                        
+                    }
+                    
+                    t = level->data[POS_TO_TILE_INDEX(x, y, level->h)];
+                    
+                    // The actor is looking at solid tiles first. In this 
+                    // case, the actor can skip the attacking logic.
+                    if (t%SOLID_TILE_PERIOD == 0) {
+                        seePlayer = 0;
+                        break;
+                        
+                    }
+                }
+                
+                if (seePlayer) {
+                    a.vel.subX = 0;
+                    absFrame = ANIM_HUNTER_AIM;
+                    
+                }
+                
+            }
+            
+            switch (absFrame) {
+                case ANIM_HUNTER_WALK_NEUTRAL: {
+                    if (a.timer % ANIM_GAIT_TRANSITION_PERIOD == 0) {
+                        if (a.timer % (4U*ANIM_GAIT_TRANSITION_PERIOD) == 0) {
+                            absFrame = ANIM_HUNTER_WALK_LEFT;
+                            
+                        } else {
+                            absFrame = ANIM_HUNTER_WALK_RIGHT;
+                            
+                        }
+                        
+                    }
+                    ++a.timer;
+                    break;
+                    
+                }
+                
+                case ANIM_HUNTER_WALK_RIGHT:
+                case ANIM_HUNTER_WALK_LEFT: {
+                    if (a.timer % ANIM_GAIT_TRANSITION_PERIOD == 0) {
+                        absFrame = ANIM_HUNTER_WALK_NEUTRAL;
+                        
+                    }
+                    ++a.timer;
+                    break;
+                    
+                }
+                
+                case ANIM_HUNTER_AIM: {
+                    if (seePlayer && absFrame != ANIM_HUNTER_AIM) {
+                        absFrame = ANIM_HUNTER_AIM;
+                        a.timer = 0;
+                        
+                    } else {
+                        if (a.timer++ == HUNTER_AIM_PERIOD) {
+                            // Hit!
+                            s->cast.actorData.player.health = (signed char)
+                                (s->cast.actorData.player.health 
+                                - (signed char) HUNTER_DAMAGE);
+                            s->cast.actorData.player.frame = ANIM_PLAYER_HURT;
+                            absFrame = ANIM_HUNTER_WALK_NEUTRAL;
+                            a.timer = 0;
+                            
+                        }
+                        
+                    }
+                    break;
+                    
+                }
+                
+                default:
+            }
+            
+            break;
+            
+        }
+        
+        case MOLDID_NINGEN: {
+            
+        }
+        
+        
+        case MOLDID_PLAYER:
+        default:
+    }
+    
+    if (a.vel.subX > mold.maxSpeed << 8) {
+        a.vel.subX = (signed short) (mold.maxSpeed << 8);
+        
+    } else if (a.vel.subX < -mold.maxSpeed << 8) {
+        a.vel.subX = (signed short) (-mold.maxSpeed << 8);
+        
+    }
+    
+    if (facingRight) {
+        a.frame = (signed char) absFrame;
+        
+    } else {
+        a.frame = (signed char) ~absFrame;
+        
+    }
+    
+    return a;
+}
+
+sActor updatePlayer(sContext const *c) {
     sActor p = c->scene.cast.actorData.player;
     sMold const mold = c->scene.md.data[p.moldId];
     sLevel const level = c->scene.level;
@@ -421,6 +713,11 @@ static sActor updatePlayer(sContext const *c) {
     } else {
         absFrame = (unsigned char) p.frame;
     
+    }
+    
+    if (absFrame == ANIM_PLAYER_HURT) {
+        printf("ouch!\n");
+        
     }
     
     // There are two ways to cause the player to snap to the ground. 
@@ -594,7 +891,7 @@ static sActor updatePlayer(sContext const *c) {
                 p.vel.y = PLAYER_JUMP_VEL;
                 
             } else {
-                p.vel.y = (signed char)(p.vel.y-MOB_GRAVITY);
+                p.vel.y = (signed char)(p.vel.y-ACTOR_GRAVITY);
                 if (p.vel.y < -MOB_MAX_SPEED_Y) {
                     p.vel.y = -MOB_MAX_SPEED_Y;
                     
@@ -661,6 +958,8 @@ static sActor updatePlayer(sContext const *c) {
     
     // Do not animate the player when the motion update nullifies 
     // horizontal velocity.
+    // XXX: Does not work when the player is airborne when vertical 
+    // velocity is zero.
     if (p.vel.subX == 0 && p.vel.y == 0) {
         absFrame = ANIM_PLAYER_WALK_NEUTRAL;
         
@@ -704,4 +1003,17 @@ static sActor updatePlayer(sContext const *c) {
     }
     
     return p;
+}
+
+#undef collides
+static sCol collides(unsigned int x, unsigned int y, unsigned int width, 
+        sLevel const *l) {
+    sCol const col = {
+        l->data[POS_TO_TILE_INDEX(x, y, l->h)] 
+            % SOLID_TILE_PERIOD == 0,
+        l->data[POS_TO_TILE_INDEX(x + width-1, y, l->h)]
+            % SOLID_TILE_PERIOD == 0 || x+width-1 > TILE_PELS*l->w
+    };
+    
+    return col;
 }

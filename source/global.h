@@ -3,6 +3,9 @@
 #define PANIC(MESSAGE,CODE) (MessageBox((void*)0,"Error: "MESSAGE,"Error",MB_OK|MB_ICONERROR),PostQuitMessage(CODE),(void)0)
 #define ARRAY_ELEMENTS(A) ~~(sizeof(A)/(sizeof(*(A))))
 
+#define VIEWPORT_HEIGHT 288
+#define VIEWPORT_WIDTH 512
+
 typedef enum {
     MIRAGE_OK = 0,
     MIRAGE_INVALID_MODULE_HANDLE,
@@ -82,7 +85,7 @@ typedef struct {
 
 // XXX: Add molds for other tekis, like enemies and weapons in their 
 // dropped forms.
-#define MOLDS 5
+#define MOLDS 8
 typedef struct {
     
     // Every mold has a unique identifying integer for it. Any such 

@@ -497,7 +497,7 @@ int updateNpc(sScene *s, sActor *a) {
             a->vel.y = (signed char) (a->vel.y - ACTOR_GRAVITY);
         
         } else {
-            a->vel.y = ACTOR_MAX_SPEED_Y;
+            a->vel.y = -ACTOR_MAX_SPEED_Y;
             
         }
         
@@ -633,7 +633,7 @@ int updateNpc(sScene *s, sActor *a) {
             switch (absFrame) {
                 case ANIM_HUNTER_WALK_NEUTRAL: {
                     if (a->timer % ANIM_GAIT_TRANSITION_PERIOD == 0) {
-                        if (a->timer % (4U*ANIM_GAIT_TRANSITION_PERIOD) == 0) {
+                        if (a->timer % (3U*ANIM_GAIT_TRANSITION_PERIOD) == 0) {
                             absFrame = ANIM_HUNTER_WALK_LEFT;
                             
                         } else {
@@ -1212,12 +1212,7 @@ static void spawnActor(sCast *c, sActor a) {
 }
 
 static void killActor(sCast *c, unsigned int id) {
-    unsigned int const bytesToMove = (unsigned int)
-        ((&c->actorData.actor[c->actors-1] - &c->actorData.actor[id])
-        * (unsigned int) sizeof*c->actorData.actor);
-    memmove(&c->actorData.actor[id], &c->actorData.actor[id+1],
-        bytesToMove);
+    c->actorData.actor[id] = c->actorData.actor[c->actors - 1];
     c->actorData.actor[--c->actors].moldId = MOLD_NULL;
-    
     return;
 }

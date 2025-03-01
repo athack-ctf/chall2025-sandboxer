@@ -856,11 +856,11 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                         mask = mold.s.maskRight;
                         
                     } else {
-                        para[0].x = actor.pos.x + mold.w;
+                        para[0].x = actor.pos.x + mold.w - 1;
                         para[0].y = VIEWPORT_HEIGHT - actor.pos.y - mold.h;
-                        para[1].x = actor.pos.x;
+                        para[1].x = actor.pos.x - 1;
                         para[1].y = VIEWPORT_HEIGHT - actor.pos.y - mold.h;
-                        para[2].x = actor.pos.x + mold.w;
+                        para[2].x = actor.pos.x + mold.w - 1;
                         para[2].y = VIEWPORT_HEIGHT - actor.pos.y;
                         
                         frameIndex = (unsigned char)~actor.frame;

@@ -100,9 +100,7 @@ int initMoldDirectory(sMoldDirectory *dstMold, HDC dstMemDc,
 
 static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer, 
         HANDLE hMoldInfoFile, HDC dstMemDc, BITMAPINFO *bi) {
-    struct {
-        unsigned long io, maxPel;
-    } bytes;
+    unsigned long maxPels, ioBytes;
     char buffer[64];
     struct {
         char name[8];
@@ -122,12 +120,12 @@ static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer,
         } search;
     } state = { { 0 }, 0, 0, 0, 0, 0, MOLDINFO_MOLDS };
     
-    bytes.maxPel = 0;
+    maxPels = 0;
     do {
         unsigned int byteIndex;
         
         if (!ReadFile(hMoldInfoFile, buffer, ARRAY_ELEMENTS(buffer), 
-                &bytes.io, NULL)) {
+                &ioBytes, NULL)) {
             PANIC("The process unexpectedly cannot read \""DIR_MOLDINFO"\".", 
                 MIRAGE_INTERRUPT_MOLDINFO);
             
@@ -137,7 +135,7 @@ static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer,
             
         }
         
-        for (byteIndex = 0; byteIndex < bytes.io; ++byteIndex) {
+        for (byteIndex = 0; byteIndex < ioBytes; ++byteIndex) {
             char const byte = buffer[byteIndex];
             
             switch (byte) {
@@ -237,7 +235,7 @@ static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer,
                                     
                                 }
                                 
-                                if (pels > bytes.maxPel) {
+                                if (pels > maxPels) {
                                     sPixel *p = *pelBuffer;
                                     
                                     // The process should not bother 
@@ -248,10 +246,9 @@ static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer,
                                         
                                     }
                                     
-                                    bytes.maxPel = (unsigned int)
-                                        (pels * sizeof*p);
+                                    maxPels = pels;
                                     p = VirtualAlloc(NULL, 
-                                        bytes.maxPel, 
+                                        (pels * sizeof*p), 
                                         MEM_COMMIT, 
                                         PAGE_READWRITE);
                                     if (p == NULL) {
@@ -281,6 +278,7 @@ static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer,
                                     return 1;
                                     
                                 }
+                                
                                 break;
                                 
                             }
@@ -381,7 +379,8 @@ static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer,
                 case 'w': case 'W':
                 case 'x': case 'X':
                 case 'y': case 'Y':
-                case 'z': case 'Z': {
+                case 'z': case 'Z': 
+                case '_': {
                     if (state.search!=MOLDINFO_NAME
                             || state.characters
                             >=ARRAY_ELEMENTS(state.name) - 1) {
@@ -404,7 +403,7 @@ static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer,
             return 1;
             
         }
-    } while (bytes.io == sizeof buffer);
+    } while (ioBytes == sizeof buffer);
     
     if (state.moldIndex != 0) {
         PANIC("Mismatch between amount of molds and entries in "
@@ -420,7 +419,7 @@ static int loadSprite(sMold *dstMold, sPixel *pelBuffer,
         char const (*name)[8], HDC dstMemDc, BITMAPINFO *bi) {
     HANDLE hGraphicFile;
     BITMAPINFOHEADER *bih = &bi->bmiHeader;
-    signed long const tempW = bih->biWidth, tempH = bih->biHeight;
+    signed long tempW, tempH;
     char const *src;
     char *write;
     int error;
@@ -456,6 +455,8 @@ static int loadSprite(sMold *dstMold, sPixel *pelBuffer,
         
     }
     
+    tempW = bih->biWidth;
+    tempH = bih->biHeight;
     do {
         unsigned long pixels;
         
@@ -473,7 +474,8 @@ static int loadSprite(sMold *dstMold, sPixel *pelBuffer,
             sSprite s;
             char *p;
             unsigned long byteIndex;
-            unsigned int bitIndex, rowBits, rowIndex, paddingBytesPerRow;
+            unsigned int bitIndex, rowBits, rowIndex, paddingBytesPerRow,
+                paddingBitsAtLastByte, rowPayloadBytes;
             
             // Interpret as a bottom-up bitmap.
             bih->biHeight = -bih->biHeight;
@@ -496,7 +498,7 @@ static int loadSprite(sMold *dstMold, sPixel *pelBuffer,
             
             // The amount of bits in each row must be a multiple of a 
             // Sixteen. Sixteen is the amount of bits in one word.
-            rowBits = (((unsigned int)bih->biWidth+15) / 16) * 16;
+            rowBits = (((unsigned int)bih->biWidth+15U) / 16U) * 16U;
             paddingBytesPerRow = (rowBits - (unsigned int)bih->biWidth) / 8;
             
             // Assume that eight divides the total amount of pixels in 
@@ -523,8 +525,8 @@ static int loadSprite(sMold *dstMold, sPixel *pelBuffer,
                     p[byteIndex++] = byte;
                 }
                 
-                // Do not set values to padding bits, since they will 
-                // not appear anyways.
+                // Do not set values to the padding bits, since they 
+                // will not appear anyways.
                 byteIndex += paddingBytesPerRow;
             }
             
@@ -541,28 +543,67 @@ static int loadSprite(sMold *dstMold, sPixel *pelBuffer,
                 
             }
             
-            // Mirror all bits row-wise in the monochrome bitmap.
-            for (byteIndex = 0; byteIndex < pixels/8; ++byteIndex) {
-                signed int shift = 7;
-                unsigned char mirrorByte = 0x00, 
-                    sourceByte = (unsigned char)p[byteIndex];
+            rowPayloadBytes = ((unsigned int)bih->biWidth+7U) / 8;
+            paddingBitsAtLastByte = (8U*rowPayloadBytes 
+                - (unsigned int)bih->biWidth);
+            
+            for (rowIndex = 0, byteIndex = 0;
+                    rowIndex < (unsigned int) bih->biHeight;
+                    ++rowIndex) {
+                unsigned int rowByteIndex, effectiveIndex;
+                unsigned char remainder;
                 
-                while (shift--) {
-                    char const bit = sourceByte&1;
+                // Shift the entire row of bits to relocate the 
+                // padding at the opposite end.
+                for (rowByteIndex = 0, remainder = 0x00; 
+                        rowByteIndex < rowPayloadBytes;
+                        ++rowByteIndex) {
+                    unsigned char const byte = (unsigned char) 
+                        p[effectiveIndex = byteIndex+rowByteIndex],
+                        byteWithoutRemainder = (unsigned char) (byte
+                            >> paddingBitsAtLastByte);
                     
-                    mirrorByte = (unsigned char)(mirrorByte|bit);
-                    sourceByte >>= 1;
-                    mirrorByte = (unsigned char)(mirrorByte<<1);
+                    p[effectiveIndex] = (char) (byteWithoutRemainder | (remainder 
+                        << (8-paddingBitsAtLastByte)));
+                    remainder = (unsigned char) (byte
+                        - (byteWithoutRemainder<<paddingBitsAtLastByte));
                 }
-                mirrorByte = (unsigned char)(mirrorByte|sourceByte);
-                p[byteIndex] = (char)mirrorByte;
-            }
-            for (byteIndex = 0; byteIndex < pixels/8; 
-                    byteIndex = byteIndex + (unsigned long)(bih->biWidth/8)) {
-                char const temp = p[byteIndex+1];
-                p[byteIndex+1] = p[byteIndex];
-                p[byteIndex] = temp;
                 
+                // Mirror all bits within each byte making up the row.
+                for (rowByteIndex = 0; 
+                        rowByteIndex < rowPayloadBytes; 
+                        ++rowByteIndex) {
+                    signed int shift = 7;
+                    unsigned char mirrorByte = 0x00, 
+                        sourceByte = (unsigned char)
+                        p[effectiveIndex = byteIndex+rowByteIndex];
+                    
+                    while (shift--) {
+                        char const bit = sourceByte&1;
+                        
+                        mirrorByte = (unsigned char)(mirrorByte|bit);
+                        sourceByte >>= 1;
+                        mirrorByte = (unsigned char)(mirrorByte<<1);
+                    }
+                    mirrorByte = (unsigned char)(mirrorByte|sourceByte);
+                    p[effectiveIndex] = (char)mirrorByte;
+                }
+                
+                // Mirror all bytes in the row.
+                for (rowByteIndex = 0; 
+                        rowByteIndex < rowPayloadBytes/2U; 
+                        ++rowByteIndex) {
+                    char const byteHead = p[effectiveIndex = 
+                        byteIndex+rowByteIndex],
+                        byteTail = p[byteIndex + rowPayloadBytes 
+                        - rowByteIndex-1U];
+                    p[effectiveIndex] = (char) byteTail;
+                    p[byteIndex + rowPayloadBytes - rowByteIndex-1U] = (char) 
+                        byteHead;
+                    
+                }
+                
+                byteIndex += rowBits/8U;
             }
             
             s.maskLeft = CreateBitmap((signed int)bih->biWidth, 
@@ -584,9 +625,9 @@ static int loadSprite(sMold *dstMold, sPixel *pelBuffer,
             
         }
     } while (0);
-    
     bih->biWidth = tempW;
     bih->biHeight = tempH;
+    
     CloseHandle(hGraphicFile);
     return error;
 }
@@ -681,8 +722,6 @@ static int decodeGfx(sPixel *dst, HANDLE hf, unsigned long stridePixels) {
     // load in palette header data after pixel data. As such, the 
     // state of the decoder must persist across changes in palette.
     struct {
-        
-        // XXX: Think of better naming and organisation.
         unsigned char pixelsLeftInChunk, colorIndex;
         char thereIsTail;
         enum {

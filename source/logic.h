@@ -53,16 +53,16 @@ typedef struct {
     sCoord spawn;
 } sLevel;
 
-#define MAX_ACTORS 64
+#define MAX_ACTORS 256
 #define GRAVITY 2
 #define MOLD_NULL 0xFF
 typedef struct {
     struct {
-        unsigned char actors;
         union {
             sActor player;
             sActor actor[MAX_ACTORS];
         } actorData;
+        unsigned short actors;
     };
 } sCast;
 typedef struct {
@@ -76,10 +76,11 @@ typedef struct {
     unsigned char holdDur;
 } sKey;
 typedef struct {
+    sKey right, up, left, down, run, jump, slide;
+} sInput;
+typedef struct {
     sScene scene;
-    struct {
-        sKey right, up, left, down, run, jump, slide;
-    } input;
+    sInput input;
 } sContext;
 
 int initContext(sScene *s);

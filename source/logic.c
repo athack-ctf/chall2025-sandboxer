@@ -5,28 +5,31 @@
 #include "global.h"
 #include "logic.h"
 
+enum {
+    MOLDID_PLAYER,
+    MOLDID_HUNTER,
+    MOLDID_NINGEN
+};
+
 static int loadLevel(sLevel *dst);
-static int initActorData(sCast *c);
+static int initActorData(sCast *c, sCoord defaultPos);
 
 int initContext(sScene *s) {
-    sActor player;
-    
-    if (loadLevel(&s->level) || initActorData(&s->cast)) {
+    if (loadLevel(&s->level)) {
         return 1;
         
     }
     
-    player.moldId = 0;
-    player.vel.y = 0;
-    player.vel.subX = 0;
+    if (initActorData(&s->cast, s->level.spawn)) {
+        return 1;
+        
+    }
     
-    // The player begins by facing right.
-    player.timer = 0;
-    player.health = 1;
-    
-    player.pos = s->level.spawn;
-    
-    s->cast.actorData.player = player;
+    // Prevent the player from just seeing the flag.
+    if (s->cast.actorData.player.moldId == MOLDID_NINGEN) {
+        return 1;
+        
+    }
     
     return 0;
 }
@@ -47,6 +50,11 @@ int freeLevelData(void) {
 #include <limits.h>
 
 #include "global_dict.h"
+
+#define ACTOR_DEFAULT_HEALTH 1
+
+// For restoring the original health of the player when they respawn.
+static signed char playerHealth = ACTOR_DEFAULT_HEALTH;
 
 #define LEVEL_HEADER_BYTES 6U
 #define LEVEL_HEADER_COORD_BITS 12U
@@ -140,10 +148,10 @@ static int loadLevel(sLevel *dst) {
     return code;
 }
 
-static int initActorData(sCast *c) {
+static int initActorData(sCast *c, sCoord defaultPos) {
     FILE *f;
     char buffer[64];
-    unsigned int ioBytes;
+    unsigned int ioBytes, actorIndex;
     struct {
         char keyword[4];
         unsigned short number;
@@ -162,7 +170,6 @@ static int initActorData(sCast *c) {
             SEARCH_HEALTH
         } search;
     } state;
-    unsigned char actorIndex;
     
     f = fopen(DIR_LEVEL_GEN, "rb");
     if (f == NULL) {
@@ -194,18 +201,17 @@ static int initActorData(sCast *c) {
             if (state.search == SEARCH_PREPARE) {
                 
                 // Default per-enemy attributes.
+                c->actorData.actor[actorIndex].pos = defaultPos;
                 c->actorData.actor[actorIndex].vel.subX = 0;
                 c->actorData.actor[actorIndex].vel.y = 0;
                 c->actorData.actor[actorIndex].moldId = MOLD_NULL;
-                c->actorData.actor[actorIndex].health = +1;
+                c->actorData.actor[actorIndex].health = ACTOR_DEFAULT_HEALTH;
                 
                 // An actor faces rightwards by default.
                 c->actorData.actor[actorIndex].frame = 0;
                 
                 // All actors begin their respective timers at zero.
                 c->actorData.actor[actorIndex].timer = 0;
-                
-                // Leave other attributes as undefined.
                 
                 state.search = SEARCH_ENTRY;
                 
@@ -262,6 +268,17 @@ static int initActorData(sCast *c) {
                             case SEARCH_HEALTH: {
                                 (*dst)[actorIndex].health = (signed char) 
                                     state.number;
+                                
+                                // The player must begin with the same 
+                                // amount of health points even after 
+                                // respawning.
+                                if (actorIndex == &c->actorData.actor[0] 
+                                        - &c->actorData.player) {
+                                    playerHealth = (signed char) 
+                                        state.number;
+                                
+                                }
+                                
                                 state.search = SEARCH_ENTRY;
                                 break;
                                 
@@ -377,7 +394,7 @@ static int initActorData(sCast *c) {
         }
     }
     
-    c->actors = actorIndex;
+    c->actors = (unsigned short) actorIndex;
     
     fclose(f);
     
@@ -395,24 +412,22 @@ static sCol collides(unsigned int x, unsigned int y, unsigned width,
 #define collides(x, y, w, l) collides((unsigned short)(x), \
     (unsigned short)(y), (unsigned short)(w), (l))
 
+static void spawnActor(sCast *c, sActor a);
+static void killActor(sCast *c, unsigned char id);
+
 #define ABS(X) ~~((X)>0 ? (X) : -(X))
 #define POS_TO_TILE_INDEX(X, Y, H) ~~((H)*((X)/TILE_PELS) + (Y)/TILE_PELS)
 #define ACTOR_GRAVITY 1
-#define MOB_MAX_SPEED_Y 21
-
+#define MOB_MAX_SPEED_Y ~~(TILE_PELS-1)
 #define ANIM_GAIT_TRANSITION_PERIOD 8U
 
-enum {
-    MOLDID_PLAYER,
-    MOLDID_HUNTER,
-    MOLDID_NINGEN
-};
 
 #define PLAYER_WALK_COEF(VEL) ~~(1*(VEL)/ 2)
 #define PLAYER_FRICTION 26
 #define PLAYER_JUMP_HOLD_FRAMES 18
 #define PLAYER_SLIDE_HOLD_FRAMES 32
-#define PLAYER_JUMP_VEL 7
+#define PLAYER_JUMP_VEL 6
+#define PLAYER_RESPAWN_FRAMES 120U
 enum {
     ANIM_PLAYER_WALK_NEUTRAL,
     ANIM_PLAYER_WALK_LEFT,
@@ -430,9 +445,11 @@ enum {
 };
 #define ANIM_DASH_SLIDE_TRANSITION 2U
 #define ANIM_SLIDE_GETUP_TRANSITION 3U
+#define ANIM_HURT_TRANSITION 8U
 
 #define HUNTER_AIM_PERIOD 40U
 #define HUNTER_DAMAGE 1U
+#define HUNTER_KNOCKBACK 200
 enum {
     ANIM_HUNTER_WALK_NEUTRAL,
     ANIM_HUNTER_WALK_LEFT,
@@ -450,6 +467,9 @@ enum {
     ANIM_HUNTER_AIM
 };
 
+#define NINGEN_SPAWN_PERIOD 50U
+#define NINGEN_SPAWN_AMOUNT 80U
+
 sActor updateNpc(sScene *s, sActor a) {
     sMold const mold = s->md.data[a.moldId];
     sLevel const *level = &s->level;
@@ -464,6 +484,8 @@ sActor updateNpc(sScene *s, sActor a) {
     a.pos.y = (unsigned short)(a.pos.y + a.vel.y);
     a.pos.x = (unsigned short)(a.pos.x + velX);
     
+    // XXX: Check if the actor is colliding with the left side of the 
+    // level. Otherwise, unsigned underflow can occur.
     hitting.floor = collides(a.pos.x, a.pos.y-1, mold.w, level);
     if (hitting.floor.left||hitting.floor.right) {
         a.pos.y = (unsigned short) (((a.pos.y+TILE_PELS-1)/TILE_PELS)
@@ -474,20 +496,7 @@ sActor updateNpc(sScene *s, sActor a) {
         a.vel.y = (signed char) (a.vel.y - ACTOR_GRAVITY);
         
     }
-    
     hitting.step = collides(a.pos.x, a.pos.y+TILE_PELS-1, mold.w, level);
-    if (hitting.step.left) {
-        a.pos.x = (unsigned short)(((a.pos.x + TILE_PELS-1) / TILE_PELS)
-            * TILE_PELS);
-            
-        a.vel.subX = 0;
-        
-    } else if (hitting.step.right) {
-        a.pos.x = (unsigned short)(((a.pos.x + mold.w-1) / TILE_PELS)
-            * TILE_PELS - mold.w);
-        a.vel.subX = 0;
-        
-    }
     
     switch (a.moldId) {
         case MOLDID_HUNTER: {
@@ -496,35 +505,36 @@ sActor updateNpc(sScene *s, sActor a) {
             sActor const pa = s->cast.actorData.player;
             unsigned char seePlayer;
             
-            if (facingRight) {
-                if (a.vel.subX < mold.maxSpeed << 8) {
-                    a.vel.subX = (signed short) 
-                        (a.vel.subX + mold.subAccel);
+            if (absFrame != ANIM_HUNTER_AIM) {
+                if (facingRight) {
+                    if (hitting.step.right) {
+                        facingRight = 0;
+                        
+                    } else if (a.vel.subX < mold.maxSpeed << 8) {
+                        a.vel.subX = (signed short) 
+                            (a.vel.subX + mold.subAccel);
+                        
+                    }
                     
-                }
-                
-                if (hitting.step.right) {
-                    facingRight = 0;
-                    
-                }
-                
-            } else {
-                if (a.vel.subX > -mold.maxSpeed << 8) {
-                    a.vel.subX = (signed short) 
-                        (a.vel.subX - mold.subAccel);
-                    
-                }
-                
-                if (hitting.step.left) {
-                    facingRight = 1;
+                } else {
+                    if (hitting.step.left) {
+                        facingRight = 1;
+                        
+                    } else if (a.vel.subX > -mold.maxSpeed << 8) {
+                        a.vel.subX = (signed short) 
+                            (a.vel.subX - mold.subAccel);
+                        
+                    }
                     
                 }
                 
             }
             
             if (a.pos.y >= pa.pos.y && a.pos.y < pa.pos.y+playerMold.h
-                    && ((facingRight && pa.pos.x >= a.pos.x+mold.w)
-                    || (!facingRight && pa.pos.x < a.pos.x))) {
+                    && ((facingRight && pa.pos.x+playerMold.w  
+                    >= a.pos.x+mold.w/2U)
+                    || (!facingRight && pa.pos.x < a.pos.x+mold.w/2U))
+                    && pa.health > 0) {
                 unsigned const int step = facingRight ? TILE_PELS :
                     (unsigned int) -TILE_PELS;
                 unsigned int x, y, start, boundary;
@@ -533,6 +543,8 @@ sActor updateNpc(sScene *s, sActor a) {
                 y = a.pos.y + mold.h/2U;
                 seePlayer = 1;
                 
+                // XXX: Add case where the boundary goes beyond the 
+                // level.
                 if (pa.pos.x >= VIEWPORT_WIDTH/2U) {
                     boundary = start + (facingRight ? VIEWPORT_WIDTH/2U
                         : (unsigned int) -(VIEWPORT_WIDTH/2U));
@@ -549,14 +561,12 @@ sActor updateNpc(sScene *s, sActor a) {
                     
                     if (facingRight) {
                         if (x > pa.pos.x) {
-                            seePlayer = 1;
                             break;
                             
                         }
                         
                     } else {
                         if (x < pa.pos.x) {
-                            seePlayer = 1;
                             break;
                             
                         }
@@ -574,9 +584,18 @@ sActor updateNpc(sScene *s, sActor a) {
                     }
                 }
                 
-                if (seePlayer) {
-                    a.vel.subX = 0;
+            } else {
+                seePlayer = 0;
+                
+            }
+            
+            // Logic that makes decisions using the enemy's 
+            // animation frame can change said animation frame.
+            if (seePlayer) {
+                if (absFrame!=ANIM_HUNTER_AIM) {
                     absFrame = ANIM_HUNTER_AIM;
+                    a.vel.subX = 0;
+                    a.timer = 1U;
                     
                 }
                 
@@ -611,21 +630,38 @@ sActor updateNpc(sScene *s, sActor a) {
                 }
                 
                 case ANIM_HUNTER_AIM: {
-                    if (seePlayer && absFrame != ANIM_HUNTER_AIM) {
-                        absFrame = ANIM_HUNTER_AIM;
-                        a.timer = 0;
+                    if ((a.timer++ == HUNTER_AIM_PERIOD)
+                            || (pa.pos.x > a.pos.x
+                            && pa.pos.x < a.pos.x+mold.w)
+                            || (pa.pos.x+playerMold.w > a.pos.x
+                            && pa.pos.x+playerMold.w < a.pos.x+mold.w)) {
                         
-                    } else {
-                        if (a.timer++ == HUNTER_AIM_PERIOD) {
-                            // Hit!
-                            s->cast.actorData.player.health = (signed char)
+                        // Only damage the player if the player is 
+                        // within sight.
+                        if (seePlayer) {
+                            sActor *p = &s->cast.actorData.player;
+                            p->health = (signed char)
                                 (s->cast.actorData.player.health 
                                 - (signed char) HUNTER_DAMAGE);
-                            s->cast.actorData.player.frame = ANIM_PLAYER_HURT;
-                            absFrame = ANIM_HUNTER_WALK_NEUTRAL;
-                            a.timer = 0;
+                            if (pa.pos.x > a.pos.x) {
+                                p->frame = ANIM_PLAYER_HURT;
+                                p->vel.subX = (signed short)
+                                    (p->vel.subX + HUNTER_KNOCKBACK);
+                                
+                            } else {
+                                p->frame = ~ANIM_PLAYER_HURT;
+                                p->vel.subX = (signed short)
+                                    (p->vel.subX - HUNTER_KNOCKBACK);
+                                
+                            }
+                            
+                            // Do not stack the vertical component of 
+                            // the knockback.
+                            p->vel.y = 6;
                             
                         }
+                        absFrame = ANIM_HUNTER_WALK_NEUTRAL;
+                        a.timer = 0;
                         
                     }
                     break;
@@ -640,6 +676,41 @@ sActor updateNpc(sScene *s, sActor a) {
         }
         
         case MOLDID_NINGEN: {
+            if (a.timer++ % NINGEN_SPAWN_PERIOD == 0) {
+                unsigned int iterations, i;
+                unsigned int const step = mold.w/NINGEN_SPAWN_AMOUNT;
+                
+                if (s->cast.actors 
+                        == ARRAY_ELEMENTS(s->cast.actorData.actor)) {
+                    break;
+                    
+                } else if (s->cast.actors+NINGEN_SPAWN_AMOUNT
+                        >= ARRAY_ELEMENTS(s->cast.actorData.actor)) {
+                    iterations = (unsigned int)
+                        (ARRAY_ELEMENTS(s->cast.actorData.actor)
+                        - s->cast.actors - 1);
+                    
+                } else {
+                    iterations = NINGEN_SPAWN_AMOUNT;
+                    
+                }
+                    
+                for (i = 0; i < iterations; ++i) {
+                    sActor npc;
+                    npc.pos.x = (unsigned short) (a.pos.x + i*step);
+                    npc.pos.y = (unsigned short) (a.pos.y + mold.h/2U);
+                    npc.moldId = MOLDID_HUNTER;
+                    npc.frame = ANIM_HUNTER_WALK_NEUTRAL;
+                    npc.health = +1;
+                    npc.timer = 0;
+                    npc.vel.subX = 0;
+                    npc.vel.y = 0;
+                    spawnActor(&s->cast, npc);
+                }
+                
+            }
+            
+            break;
             
         }
         
@@ -648,12 +719,28 @@ sActor updateNpc(sScene *s, sActor a) {
         default:
     }
     
-    if (a.vel.subX > mold.maxSpeed << 8) {
-        a.vel.subX = (signed short) (mold.maxSpeed << 8);
+    // Apply horizontal collision checks after the enemy updates in 
+    // function of their behaviour.
+    if (hitting.step.left) {
+        a.pos.x = (unsigned short)(((a.pos.x + TILE_PELS-1) / TILE_PELS)
+            * TILE_PELS);
         
-    } else if (a.vel.subX < -mold.maxSpeed << 8) {
-        a.vel.subX = (signed short) (-mold.maxSpeed << 8);
+        a.vel.subX = 0;
         
+    } else if (hitting.step.right) {
+        a.pos.x = (unsigned short)(((a.pos.x + mold.w-1) / TILE_PELS)
+            * TILE_PELS - mold.w-1);
+        a.vel.subX = 0;
+        
+    } else {
+        if (a.vel.subX > mold.maxSpeed << 8) {
+            a.vel.subX = (signed short) (mold.maxSpeed << 8);
+            
+        } else if (a.vel.subX < -mold.maxSpeed << 8) {
+            a.vel.subX = (signed short) (-mold.maxSpeed << 8);
+            
+        }
+    
     }
     
     if (facingRight) {
@@ -671,12 +758,11 @@ sActor updatePlayer(sContext const *c) {
     sActor p = c->scene.cast.actorData.player;
     sMold const mold = c->scene.md.data[p.moldId];
     sLevel const level = c->scene.level;
+    sInput input;
     sCoord const prev = p.pos;
     signed short maxSpeed;
     struct {
-        struct {
-            char left, right;
-        } floor, step, bottom, ceil;
+        sCol floor, step, bottom, ceil;
     } hitting;
     unsigned char absFrame;
     
@@ -696,14 +782,6 @@ sActor updatePlayer(sContext const *c) {
         
     }
     
-    if (c->input.run.holdDur) {
-        maxSpeed = (signed short) (mold.maxSpeed<<8);
-        
-    } else {
-        maxSpeed = (signed short) PLAYER_WALK_COEF(mold.maxSpeed<<8);
-        
-    }
-    
     // This function deduces the player's orientation from its `frame` 
     // attribute. The function must perform manipulations on a copy of 
     // this value.
@@ -715,8 +793,72 @@ sActor updatePlayer(sContext const *c) {
     
     }
     
-    if (absFrame == ANIM_PLAYER_HURT) {
-        printf("ouch!\n");
+    // Other actors pass messages to the player by changing the 
+    // player's animation frame. It is the player's responsibility 
+    // to process the change of their animation frame.
+    memset(&input, 0x00, sizeof input);
+    if (p.health > 0) {
+        switch (absFrame) {
+            case ANIM_PLAYER_HURT: {
+                
+                // Prevent the player from jumping while taking damage.
+                input.jump.holdDur = PLAYER_JUMP_HOLD_FRAMES;
+                
+                // Make knockback take full effect.
+                input.run.holdDur = 1;
+                
+                if (p.timer++ < ANIM_HURT_TRANSITION) {
+                    p.timer = 0;
+                    
+            default:
+                    input.up = c->input.up;
+                    input.slide = c->input.slide;
+                    input.left = c->input.left;
+                    input.right = c->input.right;
+                
+            case ANIM_PLAYER_CROUCH:
+                    input.jump = c->input.jump;
+                    input.run = c->input.run;
+                    input.down = c->input.down;
+                
+                }
+                break;
+                
+            }
+        }
+        
+    } else {
+        if (absFrame == ANIM_PLAYER_DEAD) {
+            if (p.timer++ == PLAYER_RESPAWN_FRAMES) {
+                p.pos = level.spawn;
+                
+                // Facing right
+                p.frame = ANIM_PLAYER_WALK_NEUTRAL;
+                
+                p.health = playerHealth;
+                p.timer = 0;
+                
+            }
+            
+            // End prematurely because there is no logic to process 
+            // when dead.
+            return p;
+            
+        } else if (absFrame == ANIM_PLAYER_WALK_NEUTRAL) {
+            absFrame = ANIM_PLAYER_DEAD;
+            p.timer = 0;
+            
+        }
+        // Otherwise, pretend as if the player did not input 
+        // anything.
+        
+    }
+    
+    if (input.run.holdDur) {
+        maxSpeed = (signed short) (mold.maxSpeed<<8);
+    
+    } else {
+        maxSpeed = (signed short) PLAYER_WALK_COEF(mold.maxSpeed<<8);
         
     }
     
@@ -731,19 +873,13 @@ sActor updatePlayer(sContext const *c) {
     // tile. The player must also be falling at the speed of their 
     // jump. This last condition guarantees to ground the player when 
     // they are jumping in place.
-    hitting.floor.left = level.data[POS_TO_TILE_INDEX(p.pos.x, p.pos.y-1, 
-        level.h)] % SOLID_TILE_PERIOD == 0;
-    hitting.floor.right = level.data[POS_TO_TILE_INDEX(p.pos.x+mold.w-1,
-        p.pos.y-1, level.h)] % SOLID_TILE_PERIOD == 0;
-    hitting.step.left = level.data[POS_TO_TILE_INDEX(p.pos.x, 
-        p.pos.y+TILE_PELS-1, level.h)] % SOLID_TILE_PERIOD == 0;
-    hitting.step.right = level.data[POS_TO_TILE_INDEX(p.pos.x+mold.w-1, 
-        p.pos.y+TILE_PELS-1, level.h)] % SOLID_TILE_PERIOD == 0;
+    hitting.floor = collides(p.pos.x, p.pos.y-1, mold.w, &level);
+    hitting.step = collides(p.pos.x, p.pos.y+TILE_PELS-1, mold.w, &level);
     if (((hitting.floor.left||hitting.floor.right)&&p.vel.y==0)
             || (p.vel.y <= -PLAYER_JUMP_VEL
             &&( ((hitting.floor.left&&!hitting.step.left)
             ||(hitting.floor.right&&!hitting.step.right)) ))) {
-        if (c->input.jump.holdDur == 1) {
+        if (input.jump.holdDur == 1) {
             p.vel.y = PLAYER_JUMP_VEL;
             
         } else {
@@ -763,20 +899,19 @@ sActor updatePlayer(sContext const *c) {
             }
             
             // Sliding cancels out all friction.
-            if (c->input.slide.holdDur > 0 
-                    && c->input.slide.holdDur < PLAYER_SLIDE_HOLD_FRAMES
-                    && !c->input.down.holdDur) {
+            if (input.slide.holdDur > 0 
+                    && input.slide.holdDur < PLAYER_SLIDE_HOLD_FRAMES) {
                 signed short const slidingSpeed = (signed short)
                     (mold.maxSpeed << 8);
                 
-                if (c->input.left.holdDur && (p.vel.subX == -slidingSpeed
-                        || c->input.slide.holdDur == 1)) {
+                if (input.left.holdDur && (p.vel.subX == -slidingSpeed
+                        || input.slide.holdDur == 1)) {
                     p.vel.subX = (signed short) -slidingSpeed;
                     maxSpeed =  slidingSpeed;
                     
-                } else if (c->input.right.holdDur 
+                } else if (input.right.holdDur 
                         && (p.vel.subX == slidingSpeed
-                        || c->input.slide.holdDur == 1)) {
+                        || input.slide.holdDur == 1)) {
                     p.vel.subX = slidingSpeed;
                     maxSpeed =  slidingSpeed;
                     
@@ -827,9 +962,9 @@ sActor updatePlayer(sContext const *c) {
                         
                     }
                     
-                } else if (((p.vel.subX > 0&&c->input.left.holdDur)
-                        ||(p.vel.subX < 0&&c->input.right.holdDur))
-                        && c->input.run.holdDur) {
+                } else if (((p.vel.subX > 0&&input.left.holdDur)
+                        ||(p.vel.subX < 0&&input.right.holdDur))
+                        && input.run.holdDur) {
                     absFrame = ANIM_PLAYER_DASH;
                     
                 } else if (p.timer%changePeriod == 0) {
@@ -837,7 +972,7 @@ sActor updatePlayer(sContext const *c) {
                         unsigned char left, right, neutral;
                     } frame;
                     
-                    if (c->input.run.holdDur) {
+                    if (input.run.holdDur) {
                         frame.left = ANIM_PLAYER_RUN_LEFT;
                         frame.right = ANIM_PLAYER_RUN_RIGHT;
                         frame.neutral = ANIM_PLAYER_RUN_NEUTRAL;
@@ -868,15 +1003,17 @@ sActor updatePlayer(sContext const *c) {
                 
             }
         } else {
-            absFrame = ANIM_PLAYER_WALK_NEUTRAL;
+            if (absFrame != ANIM_PLAYER_DEAD) {
+                absFrame = ANIM_PLAYER_WALK_NEUTRAL;
+                p.timer = 0;
+                
+            }
             
         }
         
+        
     } else {
-        hitting.ceil.left = level.data[POS_TO_TILE_INDEX(p.pos.x, 
-            p.pos.y + mold.h-1, level.h)] % SOLID_TILE_PERIOD == 0;
-        hitting.ceil.right = level.data[POS_TO_TILE_INDEX(p.pos.x + mold.w-1, 
-            p.pos.y + mold.h-1, level.h)] % SOLID_TILE_PERIOD == 0;
+        hitting.ceil = collides(p.pos.x, p.pos.y+mold.h-1, mold.w, &level);
         
         if (hitting.ceil.left || hitting.ceil.right
                 || (p.pos.y + mold.h-1) > TILE_PELS*level.h) {
@@ -886,8 +1023,8 @@ sActor updatePlayer(sContext const *c) {
             
         } else {
             if (p.vel.y == +PLAYER_JUMP_VEL 
-                    && c->input.jump.holdDur > 0
-                    && c->input.jump.holdDur < PLAYER_JUMP_HOLD_FRAMES) {
+                    && input.jump.holdDur > 0
+                    && input.jump.holdDur < PLAYER_JUMP_HOLD_FRAMES) {
                 p.vel.y = PLAYER_JUMP_VEL;
                 
             } else {
@@ -901,7 +1038,18 @@ sActor updatePlayer(sContext const *c) {
             
         }
         
-        absFrame = ANIM_PLAYER_JUMP;
+        if (absFrame != ANIM_PLAYER_HURT) {
+            absFrame = ANIM_PLAYER_JUMP;
+            p.timer = 0;
+            
+        }
+        
+    }
+    
+    if (input.down.holdDur) {
+        // The crouch animation frame trumps over all other animation 
+        // frames except when taking damage.
+        absFrame = ANIM_PLAYER_CROUCH;
         
     }
     
@@ -951,36 +1099,23 @@ sActor updatePlayer(sContext const *c) {
             
             // Shift the player such that the bottom right pixel 
             // is immediately before the tile.
-            p.pos.x = (unsigned short)(p.pos.x + (TILE_PELS-mold.w));
+            p.pos.x = (unsigned short)(p.pos.x - (TILE_PELS-mold.w));
             
         }
+        
     }
     
-    // Do not animate the player when the motion update nullifies 
+    // Change the sub-velocity if necessary to calculate the current 
     // horizontal velocity.
-    // XXX: Does not work when the player is airborne when vertical 
-    // velocity is zero.
-    if (p.vel.subX == 0 && p.vel.y == 0) {
-        absFrame = ANIM_PLAYER_WALK_NEUTRAL;
+    if (input.left.holdDur) {
+        p.vel.subX = (signed short)(p.vel.subX - mold.subAccel);
         
     }
-    
-    if (c->input.down.holdDur) {
-        absFrame = ANIM_PLAYER_CROUCH;
-        
-    } else {
-        // Change the sub-velocity if necessary to calculate the current 
-        // horizontal velocity.
-        if (c->input.left.holdDur) {
-            p.vel.subX = (signed short)(p.vel.subX - mold.subAccel);
-            
-        }
-        if (c->input.right.holdDur) {
-            p.vel.subX = (signed short)(p.vel.subX + mold.subAccel);
-            
-        }
+    if (input.right.holdDur) {
+        p.vel.subX = (signed short)(p.vel.subX + mold.subAccel);
         
     }
+        
     
     // The dynamics simulator must apply speed caps at the end of the 
     // motion update.
@@ -1016,4 +1151,20 @@ static sCol collides(unsigned int x, unsigned int y, unsigned int width,
     };
     
     return col;
+}
+
+static void spawnActor(sCast *c, sActor a) {
+    c->actorData.actor[c->actors++] = a;
+    return;
+}
+
+static void killActor(sCast *c, unsigned char id) {
+    unsigned int const bytesToMove = (unsigned int)
+        ((&c->actorData.actor[c->actors-1] - &c->actorData.actor[id])
+        * (unsigned int) sizeof*c->actorData.actor);
+    memmove(&c->actorData.actor[id], &c->actorData.actor[id+1],
+        bytesToMove);
+    c->actorData.actor[--c->actors].moldId = MOLD_NULL;
+    
+    return;
 }

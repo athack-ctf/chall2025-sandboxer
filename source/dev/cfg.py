@@ -59,7 +59,7 @@ def encode(itr, file):
         if t == None:
             break
         pixel = (t[0]<<16 | t[1]<<8 | t[2])
-        byteTriplet = pixel.to_bytes(BYTES_PER_PIXEL, byteorder='big',
+        byteTriplet = pixel.to_bytes(3, byteorder='big',
             signed=False)
         file.write(byteTriplet)
     for pixel in data:

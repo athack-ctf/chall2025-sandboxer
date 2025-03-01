@@ -1,6 +1,3 @@
-// XXX: Eventually remove once `printf` debugging shenanigans are over.
-#include <stdio.h>
-
 #include <WinDef.h>
 #include <timeapi.h>
 #include <winbase.h>
@@ -289,32 +286,38 @@ int main(void) {
             
         }
         
-        // XXX: Prevent overflow for hold duration.
-        // Update the state of inputs.
-        for (i = 0; i < KEYS; ++i) {
+        if (GetFocus() == hwnd) {
+            // XXX: Prevent overflow for hold duration.
+            // Update the state of inputs.
+            for (i = 0; i < KEYS; ++i) {
+                
+                // XXX: Implement a way to verify that each assignent sets up the 
+                // correct key?
+                // XXX: Static or non-static array?
+                static int const keyId[KEYS] = {
+                    VK_RIGHT,
+                    VK_UP,
+                    VK_LEFT,
+                    VK_DOWN,
+                    'X',
+                    VK_SPACE,
+                    'C'
+                };
+                int isDown = !!GetAsyncKeyState(keyId[i]);
+                
+                // Assume that the first member is `right`.
+                sKey *a = &game.input.right;
+                
+                // The game does not consider the first frame in the 
+                // hold duration.
+                a[i].holdDur = (unsigned char) 
+                    (isDown ? (a[i].holdDur + isDown)
+                    : 0);
+            }
             
-            // XXX: Implement a way to verify that each assignent sets up the 
-            // correct key?
-            // XXX: Static or non-static array?
-            static int const keyId[KEYS] = {
-                VK_RIGHT,
-                VK_UP,
-                VK_LEFT,
-                VK_DOWN,
-                'X',
-                VK_SPACE,
-                'C'
-            };
-            int isDown = !!GetAsyncKeyState(keyId[i]);
+        } else {
+            ZeroMemory(&game.input, sizeof game.input);
             
-            // Assume that the first member is `right`.
-            sKey *a = &game.input.right;
-            
-            // The game does not consider the first frame in the 
-            // hold duration.
-            a[i].holdDur = (unsigned char) 
-                (isDown ? (a[i].holdDur + isDown)
-                : 0);
         }
         
         // Update the player outside the window procedure. No decision 
@@ -633,7 +636,7 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
             
             // Toggle display for the debug interface.
             RegisterHotKey(hwnd, MIRAGE_HOTKEY_TOGGLE, 
-                MOD_CONTROL|MOD_NOREPEAT, 'C');
+                MOD_CONTROL|MOD_NOREPEAT, 'D');
             
             // Terminate the process.
             RegisterHotKey(hwnd, MIRAGE_HOTKEY_TERMINATE, 
@@ -694,14 +697,37 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
         }
         
         case WM_DESTROY: {
+            sScene *s;
             MirageError code = MIRAGE_OK;
+            unsigned int i;
             
-            // XXX: Delete monochrom bitmaps.
-            // XXX: Delete all mold bitmaps.
-            // XXX: Delete fonts.
+            // Deleting all device contexts guarantees that the 
+            // process can deallocate bitmaps and fonts.
             if (DeleteDC(backbuffer.memoryDc) == 0
-                    || DeleteObject(backbuffer.hb) == 0
                     || DeleteDC(atlas.memoryDc) == 0
+                    || DeleteDC(debug.memoryDc) == 0) {
+                code = MIRAGE_INVALID_FREE;
+                
+            }
+            
+            s = (sScene*) GetWindowLongPtr(hwnd, 0);
+            if (s != NULL) {
+                sMoldDirectory *md = &s->md;
+                for (i = 0; i < md->molds; ++i) {
+                    if (!DeleteObject(md->data[i].s.color)
+                            || !DeleteObject(md->data[i].s.maskRight)
+                            || !DeleteObject(md->data[i].s.maskLeft)) {
+                        code = MIRAGE_INVALID_FREE;
+                        
+                    }
+                }
+                
+            }
+            // Otherwise, the process lets the resources leak, 
+            // although during termination.
+            
+            
+            if (DeleteObject(backbuffer.hb) == 0
                     || DeleteObject(atlas.hb) == 0
                     || DeleteObject(debug.hf) == 0
                     || UnregisterHotKey(hwnd, MIRAGE_HOTKEY_TOGGLE) == 0
@@ -827,8 +853,13 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd,
                     // Do not update the player again.
                     if (&s->cast.actorData.player 
                             - &s->cast.actorData.actor[0] != i) {
-                        s->cast.actorData.actor[i] = actor = 
-                            updateNpc(s, actor);
+                        
+                        // Update the logic of the actor. Skip the 
+                        // rest of the logic if the actor died.
+                        if (updateNpc(s, &s->cast.actorData.actor[i])) {
+                            continue;
+                            
+                        }
                         
                     }
                     

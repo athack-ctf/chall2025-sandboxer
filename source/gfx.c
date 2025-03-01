@@ -214,6 +214,7 @@ static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer,
                                 
                                 state.moldIndex = (unsigned char) 
                                     (state.number - 1U);
+                                dstMold->molds = (unsigned char) state.number;
                                 state.search = MOLDINFO_ENTRY;
                                 break;
                                 
@@ -231,6 +232,14 @@ static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer,
                                     PANIC("An invalid mold entry is in "
                                         "the mold information file.",
                                         MIRAGE_INVALID_MOLDENTRY);
+                                    return 1;
+                                    
+                                }
+                                
+                                if (state.moldIndex != 2
+                                        && memcmp(&state.name, "ningen",
+                                            6) == 0) {
+                                    PANIC("damedayo!", MIRAGE_OK);
                                     return 1;
                                     
                                 }
@@ -286,6 +295,15 @@ static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer,
                             case MOLDINFO_WIDTH: {
                                 dstMold->data[state.moldIndex].w = 
                                     (unsigned char) state.number;
+                                
+                                // The mold with the index of two must 
+                                // be the flag.
+                                if (state.moldIndex == 2
+                                        && state.number != 252U) {
+                                    PANIC("damedayo!", MIRAGE_OK);
+                                    return 1;
+                                    
+                                }
                                 break;
                                 
                             }
@@ -293,6 +311,14 @@ static int loadMoldDirectory(sMoldDirectory *dstMold, sPixel **pelBuffer,
                             case MOLDINFO_HEIGHT: {
                                 dstMold->data[state.moldIndex].h = 
                                     (unsigned char) state.number;
+                                
+                                // Ditto.
+                                if (state.moldIndex == 2
+                                        && state.number != 16U) {
+                                    PANIC("damedayo!", MIRAGE_OK);
+                                    return 1;
+                                    
+                                }
                                 break;
                                 
                             }

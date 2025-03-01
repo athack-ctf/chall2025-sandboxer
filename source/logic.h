@@ -87,8 +87,8 @@ int initContext(sScene *s);
 int freeLevelData(void);
 void updateContext(sContext *c);
 
-sActor updatePlayer(sContext const *c);
-sActor updateNpc(sScene *s, sActor a);
+sActor updatePlayer(sContext *c);
+int updateNpc(sScene *s, sActor *ref);
 
 #define _HEADER_LOGIC
 #endif

@@ -83,8 +83,6 @@ typedef struct {
     signed char subAccel;
 } sMold;
 
-// XXX: Add molds for other tekis, like enemies and weapons in their 
-// dropped forms.
 #define MOLDS 8
 typedef struct {
     
@@ -92,6 +90,7 @@ typedef struct {
     // identifier's integral value must be less than the total mold 
     // count.
     sMold data[MOLDS];
+    unsigned char molds;
 } sMoldDirectory;
 
 // XXX: Make unsigned?

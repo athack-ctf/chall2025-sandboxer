@@ -1,3 +1,8 @@
-# How to Solve the Challenge?
-
-This game tasks the player to reach an enemy whose internal name is “ningen”. This enemy continuously spawns other enemies that attack the player from afar. This game stores its level configurations using files in its internal directories. These configuration files allow the user to edit the level directly. One edit can place “ningen” over an edge such that all its minions fall. This arrangement of enemies can reveal the flag, as the former displays it. The minions are responsible for obscuring it.
+# Solution
+Multiple approaches can reveal the flag in this challenge. All such strategies rely on manipulating a key enemy in a platformer game. Reaching the end of this game is its own separate challenge for distracting participants. The game lets the player control a figure to parkour across structures. Other characters patrol around said structures to shoot at sight of the player. The end of parkour stage features an enemy that generates armies of these snipers. These armies tend to brunch together in order to obscure the flag. One approach to this challenge is to break these armies apart. The game initialises a level according to multiple configuration files, which are as follows:
+* `Abe/tuto.lvl`, which defines the terrain layout of the level. This file describes a matrix of tiles which form this layout,
+* `Abe/tuto.gen`, which defines which enemies that appear in the level. This file defines instances of enemies with their respective starting positions and health,
+* `Mukki/moldInfo.txt`, which defines the properties that all instances of an enemy have in common.
+A participant can use these files to effectively create situations triggering unusual behaviours. A player can create an environment to remove the obstructions hiding the flag. An example of such a environment is placing the army generator on a ledge. This arrangement causes all enemies arising from the army generator to fall down. Here, gravity was the key to removing the obstructions from the flag. Figure 1 shows how this strategy can appear. 
+![Screenshot 2025-03-01 172804](https://github.com/user-attachments/assets/625b9ee5-9ef2-488b-a38c-9227f1435c2c)
+Figure 1: Revelation of the flag using a ledge placement strategy.

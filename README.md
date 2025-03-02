@@ -13,8 +13,7 @@
 
 ## Description
 
-A high-level overview intended to clarify the concept and intuition behind the challenge, outlining its educational
-goals and the skills it aims to test in participants.
+A challenge putting in practice knowledge about configuration files of a game's stage. Participants must manipulate the files defining this stage in order to reveal a flag. An enemy is responsible for obscuring this flag by continuously spawning other enemies.
 
 **IMPORTANT:** This description will **NOT** be shared with participants.
 

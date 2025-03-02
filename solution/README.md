@@ -3,6 +3,7 @@ Multiple approaches can reveal the flag in this challenge. All such strategies r
 * `Abe/tuto.lvl`, which defines the terrain layout of the level. This file describes a matrix of tiles which form this layout,
 * `Abe/tuto.gen`, which defines which enemies that appear in the level. This file defines instances of enemies with their respective starting positions and health,
 * `Mukki/moldInfo.txt`, which defines the properties that all instances of an enemy have in common.
+
 A participant can use these files to effectively create situations triggering unusual behaviours. A player can create an environment to remove the obstructions hiding the flag. An example of such a environment is placing the army generator on a ledge. This arrangement causes all enemies arising from the army generator to fall down. Here, gravity was the key to removing the obstructions from the flag. Figure 1 shows how this strategy can appear. 
 ![Screenshot 2025-03-01 172804](https://github.com/user-attachments/assets/625b9ee5-9ef2-488b-a38c-9227f1435c2c)
 Figure 1: Revelation of the flag using a ledge placement strategy.

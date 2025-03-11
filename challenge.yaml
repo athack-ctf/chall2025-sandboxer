@@ -1,0 +1,24 @@
+name: "Sanboxer"
+author: "William Charron-Boyle"
+category: RE
+description: |
+  The hydrologic cycle describes the collective flow of water in the atmosphere. Water vapor rises up in the atmosphere and condenses to form clouds. Precipitation naturally follows after sufficient accumulation of vapor. The resulting shower can transcend mediums other than air. Sand is a poor retainer of water, so rain still falls in sand. 
+  Too bad electrolytes damage hardware...
+
+value: 350
+
+type: standard
+
+flags:
+  - type: "static"
+    content: "ATHACKCTF{anthr0p0gen0usCumu1us}"
+    data: "case_insensitive"
+
+tags:
+    
+files:
+    - offline-artifacts/HACKME.zip
+
+state: visible
+
+version: "0.1"

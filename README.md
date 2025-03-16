@@ -1,22 +1,42 @@
-# Sandboxer
+# @HACK 2025: Sanboxer
 
-> A game revealing flags only through some modifications of its original form
+> Authored by [William Charron-Boyle](https://github.com/jws412).
 
-## Type
+- **Category**: `RE`
+- **Value**: `350 points`
 
-- [X] **OFF**line
-- [ ] **ON**line
+> The hydrologic cycle describes the collective flow of water in the atmosphere. Water vapor rises up in the atmosphere and condenses to form clouds. Precipitation naturally follows after sufficient accumulation of vapor. The resulting shower can transcend mediums other than air. Sand is a poor retainer of water, so rain still falls in sand. 
+> Too bad electrolytes damage hardware...
+> 
 
-## Designer
+## Files
+- **[Download: HACKME.zip](https://github.com/athack-ctf/chall2025-sandboxer/raw/refs/heads/main/offline-artifacts/HACKME.zip)**
 
-- William Charron-Boyle
+## Reveal Flag
 
-## Description
+Did you try solving this challenge?
+<details>
+<summary>
+Yes
+</summary>
 
-A challenge putting in practice knowledge about configuration files of a game's stage. Participants must manipulate the files defining this stage in order to reveal a flag. An enemy is responsible for obscuring this flag by continuously spawning other enemies.
+Did you **REALLY** try solving this challenge?
 
-**IMPORTANT:** This description will **NOT** be shared with participants.
+<details>
+<summary>
+Yes, I promise!
+</summary>
 
-## Category
+Flag: `ATHACKCTF{anthr0p0gen0usCumu1us}`
 
-- `misc`
+</details>
+</details>
+
+
+---
+
+## About @HACK
+[@HACK](https://athackctf.com/) is an annual CTF (Capture The Flag) competition hosted by [HEXPLOIT ALLIANCE](https://hexploit-alliance.com/) and [TECHNATION](https://technationcanada.ca/) at Concordia University in Montreal, Canada.
+
+---
+[Check more challenges from @HACK 2025](https://github.com/athack-ctf/AtHackCTF-2025-Challenges).

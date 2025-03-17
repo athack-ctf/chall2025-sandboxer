@@ -1,4 +1,4 @@
-# @HACK 2025: Sanboxer
+# @HACK 2025: Sandboxer
 
 > Authored by [William Charron-Boyle](https://github.com/jws412).
 
